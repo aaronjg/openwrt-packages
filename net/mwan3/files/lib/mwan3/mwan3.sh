@@ -414,7 +414,7 @@ mwan3_set_general_iptables()
 
 mwan3_create_iface_iptables()
 {
-	local id family
+	local id family connected_name IPT
 
 	config_get family $1 family ipv4
 	mwan3_get_iface_id id $1
@@ -422,93 +422,73 @@ mwan3_create_iface_iptables()
 	[ -n "$id" ] || return 0
 
 	if [ "$family" == "ipv4" ]; then
-		$IPS -! create mwan3_connected list:set
+		connected_name=mwan3_connected
+		IPT="$IPT4"
+		$IPS -! create $connected_name list:set
 
-		if ! $IPT4 -S mwan3_ifaces_in &> /dev/null; then
-			$IPT4 -N mwan3_ifaces_in
-		fi
-
-		if ! $IPT4 -S mwan3_iface_in_$1 &> /dev/null; then
-			$IPT4 -N mwan3_iface_in_$1
-		fi
-
-		$IPT4 -F mwan3_iface_in_$1
-		$IPT4 -A mwan3_iface_in_$1 \
-			-i $2 \
-			-m set --match-set mwan3_connected src \
-			-m mark --mark 0x0/$MMX_MASK \
-			-m comment --comment "default" \
-			-j MARK --set-xmark $MMX_DEFAULT/$MMX_MASK
-		$IPT4 -A mwan3_iface_in_$1 \
-			-i $2 \
-			-m mark --mark 0x0/$MMX_MASK \
-			-m comment --comment "$1" \
-			-j MARK --set-xmark $(mwan3_id2mask id MMX_MASK)/$MMX_MASK
-
-		$IPT4 -D mwan3_ifaces_in \
-			-m mark --mark 0x0/$MMX_MASK \
-			-j mwan3_iface_in_$1 &> /dev/null
-		$IPT4 -A mwan3_ifaces_in \
-			-m mark --mark 0x0/$MMX_MASK \
-			-j mwan3_iface_in_$1
+	elif [ "$family" == "ipv6" -a $NO_IPV6 -eq 0 ]; then
+		connected_name=mwan3_connected_v6
+		IPT="$IPT6"
+		$IPS -! create $connected_name hash:net family inet6
+	else
+		return
 	fi
 
-	if [ "$family" == "ipv6" ]; then
-		$IPS -! create mwan3_connected_v6 hash:net family inet6
-
-		if ! $IPT6 -S mwan3_ifaces_in &> /dev/null; then
-			$IPT6 -N mwan3_ifaces_in
-		fi
-
-		if ! $IPT6 -S mwan3_iface_in_$1 &> /dev/null; then
-			$IPT6 -N mwan3_iface_in_$1
-		fi
-
-		$IPT6 -F mwan3_iface_in_$1
-		$IPT6 -A mwan3_iface_in_$1 -i $2 \
-			-m set --match-set mwan3_connected_v6 src \
-			-m mark --mark 0x0/$MMX_MASK \
-			-m comment --comment "default" \
-			-j MARK --set-xmark $MMX_DEFAULT/$MMX_MASK
-		$IPT6 -A mwan3_iface_in_$1 -i $2 -m mark --mark 0x0/$MMX_MASK \
-			-m comment --comment "$1" \
-			-j MARK --set-xmark $(mwan3_id2mask id MMX_MASK)/$MMX_MASK
-
-		$IPT6 -D mwan3_ifaces_in \
-			-m mark --mark 0x0/$MMX_MASK \
-			-j mwan3_iface_in_$1 &> /dev/null
-		$IPT6 -A mwan3_ifaces_in \
-			-m mark --mark 0x0/$MMX_MASK \
-			-j mwan3_iface_in_$1
+	if ! $IPT -S mwan3_ifaces_in &> /dev/null; then
+		$IPT -N mwan3_ifaces_in
 	fi
+
+	if ! $IPT4 -S mwan3_iface_in_$1 &> /dev/null; then
+		$IPT -N mwan3_iface_in_$1
+	fi
+
+	$IPT -F mwan3_iface_in_$1
+	$IPT -A mwan3_iface_in_$1 \
+	     -i $2 \
+	     -m set --match-set $connected_name src \
+	     -m mark --mark 0x0/$MMX_MASK \
+	     -m comment --comment "default" \
+	     -j MARK --set-xmark $MMX_DEFAULT/$MMX_MASK
+	$IPT -A mwan3_iface_in_$1 \
+	     -i $2 \
+	     -m mark --mark 0x0/$MMX_MASK \
+	     -m comment --comment "$1" \
+	     -j MARK --set-xmark $(mwan3_id2mask id MMX_MASK)/$MMX_MASK
+
+	$IPT -D mwan3_ifaces_in \
+	     -m mark --mark 0x0/$MMX_MASK \
+	     -j mwan3_iface_in_$1 &> /dev/null
+	$IPT -A mwan3_ifaces_in \
+	     -m mark --mark 0x0/$MMX_MASK \
+	     -j mwan3_iface_in_$1
+
 }
 
 mwan3_delete_iface_iptables()
 {
+	local IPT
 	config_get family $1 family ipv4
 
 	if [ "$family" == "ipv4" ]; then
-
-		$IPT4 -D mwan3_ifaces_in \
-			-m mark --mark 0x0/$MMX_MASK \
-			-j mwan3_iface_in_$1 &> /dev/null
-		$IPT4 -F mwan3_iface_in_$1 &> /dev/null
-		$IPT4 -X mwan3_iface_in_$1 &> /dev/null
+		IPT="$IPT4"
 	fi
 
 	if [ "$family" == "ipv6" ]; then
+		[ $NO_IPV6 -eq 1 ] && return
+		IPT="$IPT6"
+	fi
 
-		$IPT6 -D mwan3_ifaces_in \
+	$IPT -D mwan3_ifaces_in \
 			-m mark --mark 0x0/$MMX_MASK \
 			-j mwan3_iface_in_$1 &> /dev/null
-		$IPT6 -F mwan3_iface_in_$1 &> /dev/null
-		$IPT6 -X mwan3_iface_in_$1 &> /dev/null
-	fi
+	$IPT -F mwan3_iface_in_$1 &> /dev/null
+	$IPT -X mwan3_iface_in_$1 &> /dev/null
+
 }
 
 mwan3_create_iface_route()
 {
-	local id route_args metric
+	local id route_args metric V V_ null_ip IP
 
 	config_get family $1 family ipv4
 	mwan3_get_iface_id id $1
@@ -516,50 +496,40 @@ mwan3_create_iface_route()
 	[ -n "$id" ] || return 0
 
 	if [ "$family" == "ipv4" ]; then
-		if ubus call network.interface.${1}_4 status &>/dev/null; then
-			network_get_gateway route_args ${1}_4
-		else
-			network_get_gateway route_args $1
-		fi
-
-		if [ -n "$route_args" -a "$route_args" != "0.0.0.0" ]; then
-			route_args="via $route_args"
-		else
-			route_args=""
-		fi
-
-		network_get_metric metric $1
-		if [ -n "$metric" -a "$metric" != "0" ]; then
-			route_args="$route_args metric $metric"
-		fi
-
-		$IP4 route flush table $id
-		$IP4 route add table $id default $route_args dev $2
-		mwan3_rtmon_ipv4
+		V=4
+		V_=""
+		null_ip="0.0.0.0"
+		IP="$IP4"
+	elif [ "$family" == "ipv4" ]; then
+		V=6
+		V_=6
+		null_ip="::"
+		IP="$IP6"
+	else
+		return
 	fi
 
-	if [ "$family" == "ipv6" ]; then
-		if ubus call network.interface.${1}_6 status &>/dev/null; then
-			network_get_gateway6 route_args ${1}_6
-		else
-			network_get_gateway6 route_args $1
-		fi
-
-		if [ -n "$route_args" -a "$route_args" != "::" ]; then
-			route_args="via $route_args"
-		else
-			route_args=""
-		fi
-
-		network_get_metric metric $1
-		if [ -n "$metric" -a "$metric" != "0" ]; then
-			route_args="$route_args metric $metric"
-		fi
-
-		$IP6 route flush table $id
-		$IP6 route add table $id default $route_args dev $2
-		mwan3_rtmon_ipv6
+	if ubus call network.interface.${1}_${V} status &>/dev/null; then
+		network_get_gateway${V_} $route_args ${1}_${V}
+	else
+		network_get_gateway${V_} $route_args $1
 	fi
+
+	if [ -n "$route_args" -a "$route_args" != "$null_ip" ]; then
+		route_args="via $route_args"
+	else
+		route_args=""
+	fi
+
+	network_get_metric metric $1
+	if [ -n "$metric" -a "$metric" != "0" ]; then
+		route_args="$route_args metric $metric"
+	fi
+
+	$IP route flush table $id
+	$IP route add table $id default $route_args dev $2
+	mwan3_rtmon_ipv${V}
+
 }
 
 mwan3_delete_iface_route()
