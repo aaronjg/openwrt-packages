@@ -1,4 +1,5 @@
 #!/bin/sh
+exec 2>/dev/null
 
 IP4="ip -4"
 IP6="ip -6"
