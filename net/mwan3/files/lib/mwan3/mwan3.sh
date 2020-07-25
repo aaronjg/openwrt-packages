@@ -44,10 +44,9 @@ mwan3_rtmon_route()
 	config_load mwan3
 	local ret=1
 	local tid=0
-	local family enabled IP line
-	mkdir -p /tmp/mwan3rtmon
-	($IP4 route list table main  | grep -v "^default\|linkdown" | sort -n; echo empty fixup) >/tmp/mwan3rtmon/ipv4.main
-	[ $NO_IPV6 -eq 0 ] && ($IP6 route list table main  | grep -v "^default\|^::/0\|^fe80::/64\|^unreachable" | sort -n; echo empty fixup) >/tmp/mwan3rtmon/ipv6.main
+	local family enabled IP line tbl tbl_ tbl_main tbl_main_v6 tbl_main_v4
+	tbl_main_v4=$($IP4 route list table main  | grep -v "^default\|linkdown" | sort -n; echo empty fixup)
+	[ $NO_IPV6 -eq 0 ] && tbl_main_v6=$($IP6 route list table main  | grep -v "^default\|^::/0\|^fe80::/64\|^unreachable" | sort -n; echo empty fixup)
 	config load mwan3
 	for section in ${CONFIG_SECTIONS}; do
 		config_get cfgtype "$section" TYPE
@@ -57,10 +56,12 @@ mwan3_rtmon_route()
 		config_get enabled "$section" enabled 0
 		if [ "$family" = "ipv4" ]; then
 			IP="$IP4"
+			tbl_main="$tbl_main_v4"
 			GREP1="^default"
 			GREP2="^default\|linkdown"
 		elif [ "$family" = "ipv6" ] && [ $NO_IPV6 -eq 0 ]; then
 			IP="$IP6"
+			tbl_main="$tbl_main_v6"
 			GREP1="^default\|^::/0"
 			GREP2="^default\|^::/0\|^unreachable"
 		else
@@ -70,11 +71,11 @@ mwan3_rtmon_route()
 
 		tbl=$($IP route list table $tid 2>/dev/null)
 		if echo "$tbl" | grep -q "$GREP1"; then
-			(echo "$tbl"  | grep -v "$GREP2" | sort -n; echo empty fixup) >/tmp/mwan3rtmon/$family.$tid
-			cat /tmp/mwan3rtmon/$family.$tid | grep -v -x -F -f /tmp/mwan3rtmon/$family.main | while read line; do
+			tbl_=$(echo "$tbl"  | grep -v "$GREP2" | sort -n; echo empty fixup)
+			echo "$tbl_" | grep -v -E "^($(echo "$tbl_main"|sed 's/$/|/'|tr -d '\n'))$" | while read line; do
 				$IP route del table $tid $line
 			done
-			cat /tmp/mwan3rtmon/$family.main | grep -v -x -F -f /tmp/mwan3rtmon/$family.$tid | while read line; do
+			echo "$tbl_main" | grep -v -E "^($(echo "$tbl_"|sed 's/$/|/'|tr -d '\n'))$" | while read line; do
 				$IP route add table $tid $line
 			done
 		fi
@@ -82,8 +83,6 @@ mwan3_rtmon_route()
 			ret=0
 		fi
 	done
-	rm -f /tmp/mwan3rtmon/ipv4.*
-	rm -f /tmp/mwan3rtmon/ipv6.*
 	return $ret
 }
 
