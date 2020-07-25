@@ -39,85 +39,50 @@ NO_IPV6=$?
 
 # return true(=0) if has any mwan3 interface enabled
 # otherwise return false
-mwan3_rtmon_ipv4()
+mwan3_rtmon_route()
 {
-	local idx=0
+	config_load mwan3
 	local ret=1
-	local tbl=""
-
-	local tid family enabled
-
+	local tid=0
+	local family enabled IP line
 	mkdir -p /tmp/mwan3rtmon
 	($IP4 route list table main  | grep -v "^default\|linkdown" | sort -n; echo empty fixup) >/tmp/mwan3rtmon/ipv4.main
-	while uci get mwan3.@interface[$idx] >/dev/null 2>&1 ; do
-		tid=$((idx+1))
+	[ $NO_IPV6 -eq 0 ] && ($IP6 route list table main  | grep -v "^default\|^::/0\|^fe80::/64\|^unreachable" | sort -n; echo empty fixup) >/tmp/mwan3rtmon/ipv6.main
+	config load mwan3
+	for section in ${CONFIG_SECTIONS}; do
+		config_get cfgtype "$section" TYPE
+		[ "$cfgtype" != "interface" ] && continue
+		tid=$((tid+1))
+		config_get family "$section" family ipv4
+		config_get enabled "$section" enabled 0
+		if [ "$family" = "ipv4" ]; then
+			IP="$IP4"
+			GREP1="^default"
+			GREP2="^default\|linkdown"
+		elif [ "$family" = "ipv6" ] && [ $NO_IPV6 -eq 0 ]; then
+			IP="$IP6"
+			GREP1="^default\|^::/0"
+			GREP2="^default\|^::/0\|^unreachable"
+		else
+			continue
 
-		family="$(uci -q get mwan3.@interface[$idx].family)"
-		[ -z "$family" ] && family="ipv4"
+		fi
 
-		enabled="$(uci -q get mwan3.@interface[$idx].enabled)"
-		[ -z "$enabled" ] && enabled="0"
-
-		[ "$family" = "ipv4" ] && {
-			tbl=$($IP4 route list table $tid 2>/dev/null)
-			if echo "$tbl" | grep -q ^default; then
-				(echo "$tbl"  | grep -v "^default\|linkdown" | sort -n; echo empty fixup) >/tmp/mwan3rtmon/ipv4.$tid
-				cat /tmp/mwan3rtmon/ipv4.$tid | grep -v -x -F -f /tmp/mwan3rtmon/ipv4.main | while read line; do
-					$IP4 route del table $tid $line
-				done
-				cat /tmp/mwan3rtmon/ipv4.main | grep -v -x -F -f /tmp/mwan3rtmon/ipv4.$tid | while read line; do
-					$IP4 route add table $tid $line
-				done
-			fi
-		}
+		tbl=$($IP route list table $tid 2>/dev/null)
+		if echo "$tbl" | grep -q "$GREP1"; then
+			(echo "$tbl"  | grep -v "$GREP2" | sort -n; echo empty fixup) >/tmp/mwan3rtmon/$family.$tid
+			cat /tmp/mwan3rtmon/$family.$tid | grep -v -x -F -f /tmp/mwan3rtmon/$family.main | while read line; do
+				$IP route del table $tid $line
+			done
+			cat /tmp/mwan3rtmon/$family.main | grep -v -x -F -f /tmp/mwan3rtmon/$family.$tid | while read line; do
+				$IP route add table $tid $line
+			done
+		fi
 		if [ "$enabled" = "1" ]; then
 			ret=0
 		fi
-		idx=$((idx+1))
 	done
 	rm -f /tmp/mwan3rtmon/ipv4.*
-	return $ret
-}
-
-# return true(=0) if has any mwan3 interface enabled
-# otherwise return false
-mwan3_rtmon_ipv6()
-{
-	local idx=0
-	local ret=1
-	local tbl=""
-
-	local tid family enabled
-
-	mkdir -p /tmp/mwan3rtmon
-	($IP6 route list table main  | grep -v "^default\|^::/0\|^fe80::/64\|^unreachable" | sort -n; echo empty fixup) >/tmp/mwan3rtmon/ipv6.main
-	while uci get mwan3.@interface[$idx] >/dev/null 2>&1 ; do
-		tid=$((idx+1))
-
-		family="$(uci -q get mwan3.@interface[$idx].family)"
-		# Set default family to ipv4 that is no mistake
-		[ -z "$family" ] && family="ipv4"
-
-		enabled="$(uci -q get mwan3.@interface[$idx].enabled)"
-		[ -z "$enabled" ] && enabled="0"
-
-		[ "$family" = "ipv6" ] && {
-			tbl=$($IP6 route list table $tid 2>/dev/null)
-			if echo "$tbl" | grep -q "^default\|^::/0"; then
-				(echo "$tbl"  | grep -v "^default\|^::/0\|^unreachable" | sort -n; echo empty fixup) >/tmp/mwan3rtmon/ipv6.$tid
-				cat /tmp/mwan3rtmon/ipv6.$tid | grep -v -x -F -f /tmp/mwan3rtmon/ipv6.main | while read line; do
-					$IP6 route del table $tid $line
-				done
-				cat /tmp/mwan3rtmon/ipv6.main | grep -v -x -F -f /tmp/mwan3rtmon/ipv6.$tid | while read line; do
-					$IP6 route add table $tid $line
-				done
-			fi
-		}
-		if [ "$enabled" = "1" ]; then
-			ret=0
-		fi
-		idx=$((idx+1))
-	done
 	rm -f /tmp/mwan3rtmon/ipv6.*
 	return $ret
 }
@@ -540,7 +505,7 @@ mwan3_create_iface_route()
 	     ${via:+via} $via \
 	     ${metric:+metric} $metric \
 	     dev "$2"
-	mwan3_rtmon_ipv${V}
+	mwan3_rtmon_route
 
 }
 
