@@ -1,5 +1,4 @@
 #!/bin/sh
-
 . /usr/share/libubox/jshn.sh
 
 IP4="ip -4"
@@ -43,7 +42,7 @@ NO_IPV6=$?
 mwan3_rtmon_route_handle()
 {
 	config_load mwan3
-	local action route_line family tbl
+	local section action route_line family tbl device
 	local tid=0
 	route_line=${1##"Deleted "}
 	route_family=$2
@@ -72,44 +71,32 @@ mwan3_rtmon_route_handle()
 		echo "$tbl" | grep -q "^default\|^::/0" || continue
 		# can get route updates on ipv6 where route is already in the table
 		[ $action = "add" ] && echo "$tbl" | grep -q "$route_line" && continue
-		echo $IP route "$action" table $tid $route_line
+		network_get_device device "$iface"
+		mwan3_route_line_dev "$route_line" "$device" || continue
+		$LOG notice "adujsting route: $IP route "$action" table $tid $route_line"
 		$IP route "$action" table $tid $route_line
 	done
 }
 
-mwan3_rtmon_route()
+mwan3_route_line_dev()
 {
-	config_load mwan3
-	local ret=1
-	local tid=0
-	local family enabled IP line tbl tbl_ tbl_main tbl_main_v6 tbl_main_v4 iface
-	iface=$1
-	config_get family "$iface" family ipv4
-	if [ "$family" = "ipv4" ]; then
-		IP="$IP4"
-		tbl_main=$($IP4 route list table main  | grep -v "^default\|linkdown" | sort -n; echo empty fixup)
-		GREP1="^default"
-		GREP2="^default\|linkdown"
-	elif [ "$family" = "ipv6" ] && [ $NO_IPV6 -eq 0 ]; then
-		IP="$IP6"
-		tbl_main=$($IP6 route list table main  | grep -v "^default\|^::/0\|^fe80::/64\|^unreachable" | sort -n; echo empty fixup)
-		GREP1="^default\|^::/0"
-		GREP2="^default\|^::/0\|^unreachable"
-	else
-		continue
-	fi
-	mwan3_get_iface_id tid "$iface"
-	tbl=$($IP route list table $tid 2>/dev/null)
-	if echo "$tbl" | grep -q "$GREP1"; then
-		tbl_=$(echo "$tbl"  | grep -v "$GREP2" | sort -n; echo empty fixup)
-		echo "$tbl_" | grep -v -E "^($(echo "$tbl_main"|sed 's/$/|/'|tr -d '\n'))$" | while read line; do
-			$IP route del table $tid $line
-		done
-		echo "$tbl_main" | grep -v -E "^($(echo "$tbl_"|sed 's/$/|/'|tr -d '\n'))$" | while read line; do
-			$IP route add table $tid $line
-		done
-	fi
-	return $ret
+	# must have mwan3 config already loaded
+	# arg 1 is focal l3 device
+	local section cfgtype enabled device route_line target_device
+	route_line=$1
+	target_device=$2
+	[ -z "${route_line##*dev $target_device*}" ] && return 0
+	[ -n "${route_line##*dev*}" ] && return 0
+
+	for section in ${CONFIG_SECTIONS}; do
+		config_get cfgtype "$section" TYPE
+		[ "$cfgtype" != "interface" ] && continue
+		config_get enabled "$section" enabled
+		[ "$enabled" -eq 0 ] && continue
+		network_get_device device "$section"
+		[ -z "${route_line##*dev $device *}" ] && return 1
+	done
+	return 0
 }
 
 # counts how many bits are set to 1
@@ -496,10 +483,11 @@ mwan3_delete_iface_iptables()
 
 mwan3_create_iface_route()
 {
-	local id via metric V V_ IP
+	local id via metric V V_ IP route_line
 
-	config_get family "$1" family ipv4
+	config_get family "$1" family ipv4 device
 	mwan3_get_iface_id id "$1"
+	network_get_device device "$iface"
 
 	[ -n "$id" ] || return 0
 
@@ -530,7 +518,12 @@ mwan3_create_iface_route()
 	     ${via:+via} $via \
 	     ${metric:+metric} $metric \
 	     dev "$2"
-	mwan3_rtmon_route $1
+
+	$IP route list table main  | grep -v "^default\|linkdown\|^::/0\|^fe80::/64\|^unreachable" | while read route_line; do
+		mwan3_route_line_dev "$route_line" "$2" || continue
+		$IP route add table $id $route_line
+
+	done
 
 }
 

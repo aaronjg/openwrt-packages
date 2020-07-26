@@ -1,6 +1,6 @@
 #!/bin/sh
-set -o pipefail
 . /lib/functions.sh
+. /lib/functions/network.sh
 . /lib/mwan3/mwan3.sh
 
 LOG="logger -t $(basename "$0")[$$] -p"
@@ -24,11 +24,11 @@ main() {
 	fi
 	$IP monitor route | while read line; do
 		[ -z "${line##*table*}" ] && continue
-		echo "handling route $family $line"
+		$LOG notice "handling route $family $line"
 		mwan3_lock "service" "mwan3rtmon"
 		mwan3_rtmon_route_handle "$line" "$family"
 		mwan3_unlock "service" "mwan3rtmon"
-		echo "done handling route $family $line"
+		$LOG notice "done handling route $family $line"
 	done &
 	wait 2>/dev/null
 }
