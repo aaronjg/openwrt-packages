@@ -3,17 +3,9 @@
 . /lib/functions/network.sh
 . /lib/mwan3/mwan3.sh
 
-LOG="logger -t $(basename "$0")[$$] -p"
-
-clean_up() {
-	$LOG notice "Stopping mwan3rtmon..."
-	exit 0
-}
-
-
-main() {
+main()
+{
 	local IP family
-	trap clean_up TERM
 
 	config_load mwan3
 	family=$1
@@ -23,14 +15,14 @@ main() {
 	else
 		IP="$IP4"
 	fi
+	mwan3_init
+
 	$IP monitor route | while read line; do
 		[ -z "${line##*table*}" ] && continue
-		$LOG notice "handling route update $family $line"
-		network_flush_cache
+		LOG debug "handling route update $family $line"
 		mwan3_lock "service" "mwan3rtmon"
 		mwan3_rtmon_route_handle "$line" "$family"
 		mwan3_unlock "service" "mwan3rtmon"
-	done &
-	wait 2>/dev/null
+	done
 }
 main "$@"
