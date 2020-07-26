@@ -39,50 +39,76 @@ NO_IPV6=$?
 
 # return true(=0) if has any mwan3 interface enabled
 # otherwise return false
-mwan3_rtmon_route()
+
+mwan3_rtmon_route_handle()
 {
 	config_load mwan3
-	local ret=1
+	local action route_line family tbl
 	local tid=0
-	local family enabled IP line tbl tbl_ tbl_main tbl_main_v6 tbl_main_v4
-	tbl_main_v4=$($IP4 route list table main  | grep -v "^default\|linkdown" | sort -n; echo empty fixup)
-	[ $NO_IPV6 -eq 0 ] && tbl_main_v6=$($IP6 route list table main  | grep -v "^default\|^::/0\|^fe80::/64\|^unreachable" | sort -n; echo empty fixup)
-	config load mwan3
+	route_line=${1##"Deleted "}
+	route_family=$2
+
+	if [ "$route_family" = "ipv4" ]; then
+		IP="$IP4"
+	elif [ "$route_family" = "ipv6" ] && [ $NO_IPV6 -eq 0 ]; then
+		IP="$IP6"
+	else
+		return
+	fi
+
+	if [ "$route_line" == "$1" ]; then
+		action="add"
+	else
+		action="del"
+	fi
+
 	for section in ${CONFIG_SECTIONS}; do
 		config_get cfgtype "$section" TYPE
 		[ "$cfgtype" != "interface" ] && continue
 		tid=$((tid+1))
 		config_get family "$section" family ipv4
-		config_get enabled "$section" enabled 0
-		if [ "$family" = "ipv4" ]; then
-			IP="$IP4"
-			tbl_main="$tbl_main_v4"
-			GREP1="^default"
-			GREP2="^default\|linkdown"
-		elif [ "$family" = "ipv6" ] && [ $NO_IPV6 -eq 0 ]; then
-			IP="$IP6"
-			tbl_main="$tbl_main_v6"
-			GREP1="^default\|^::/0"
-			GREP2="^default\|^::/0\|^unreachable"
-		else
-			continue
-
-		fi
-
-		tbl=$($IP route list table $tid 2>/dev/null)
-		if echo "$tbl" | grep -q "$GREP1"; then
-			tbl_=$(echo "$tbl"  | grep -v "$GREP2" | sort -n; echo empty fixup)
-			echo "$tbl_" | grep -v -E "^($(echo "$tbl_main"|sed 's/$/|/'|tr -d '\n'))$" | while read line; do
-				$IP route del table $tid $line
-			done
-			echo "$tbl_main" | grep -v -E "^($(echo "$tbl_"|sed 's/$/|/'|tr -d '\n'))$" | while read line; do
-				$IP route add table $tid $line
-			done
-		fi
-		if [ "$enabled" = "1" ]; then
-			ret=0
-		fi
+		[ "$family" != "$route_family" ] && continue
+		tbl=$($IP route list table $tid)
+		echo "$tbl" | grep -q "^default\|^::/0" || continue
+		# can get route updates on ipv6 where route is already in the table
+		[ $action = "add" ] && echo "$tbl" | grep -q "$route_line" && continue
+		echo $IP route "$action" table $tid $route_line
+		$IP route "$action" table $tid $route_line
 	done
+}
+
+mwan3_rtmon_route()
+{
+	config_load mwan3
+	local ret=1
+	local tid=0
+	local family enabled IP line tbl tbl_ tbl_main tbl_main_v6 tbl_main_v4 iface
+	iface=$1
+	config_get family "$iface" family ipv4
+	if [ "$family" = "ipv4" ]; then
+		IP="$IP4"
+		tbl_main=$($IP4 route list table main  | grep -v "^default\|linkdown" | sort -n; echo empty fixup)
+		GREP1="^default"
+		GREP2="^default\|linkdown"
+	elif [ "$family" = "ipv6" ] && [ $NO_IPV6 -eq 0 ]; then
+		IP="$IP6"
+		tbl_main=$($IP6 route list table main  | grep -v "^default\|^::/0\|^fe80::/64\|^unreachable" | sort -n; echo empty fixup)
+		GREP1="^default\|^::/0"
+		GREP2="^default\|^::/0\|^unreachable"
+	else
+		continue
+	fi
+	mwan3_get_iface_id tid "$iface"
+	tbl=$($IP route list table $tid 2>/dev/null)
+	if echo "$tbl" | grep -q "$GREP1"; then
+		tbl_=$(echo "$tbl"  | grep -v "$GREP2" | sort -n; echo empty fixup)
+		echo "$tbl_" | grep -v -E "^($(echo "$tbl_main"|sed 's/$/|/'|tr -d '\n'))$" | while read line; do
+			$IP route del table $tid $line
+		done
+		echo "$tbl_main" | grep -v -E "^($(echo "$tbl_"|sed 's/$/|/'|tr -d '\n'))$" | while read line; do
+			$IP route add table $tid $line
+		done
+	fi
 	return $ret
 }
 
@@ -504,7 +530,7 @@ mwan3_create_iface_route()
 	     ${via:+via} $via \
 	     ${metric:+metric} $metric \
 	     dev "$2"
-	mwan3_rtmon_route
+	mwan3_rtmon_route $1
 
 }
 
@@ -613,12 +639,15 @@ mwan3_delete_iface_ipset_entries()
 
 mwan3_rtmon()
 {
-	pid="$(pgrep -f mwan3rtmon)"
-	if [ "${pid}" != "" ]; then
-		kill -USR1 "${pid}"
-	else
-		[ -x /usr/sbin/mwan3rtmon ] && /usr/sbin/mwan3rtmon &
-	fi
+	local protocal
+	for protocol in "ipv4" "ipv6"; do
+		pid="$(pgrep -f "mwan3rtmon $protocol")"
+		if [ "${pid}" != "" ]; then
+			kill -USR1 "${pid}"
+		else
+			[ -x /usr/sbin/mwan3rtmon ] && /usr/sbin/mwan3rtmon $protocol &
+		fi
+	done
 }
 
 mwan3_track()
@@ -631,13 +660,10 @@ mwan3_track()
 	}
 	config_list_foreach "$1" track_ip mwan3_list_track_ips
 
-	for pid in $(pgrep -f "mwan3track $1 $2"); do
-		kill -TERM "$pid" > /dev/null 2>&1
-	done
+	kill -TERM $(pgrep -f "mwan3track $1 $2") > /dev/null 2>&1
 	sleep 1
-	for pid in $(pgrep -f "mwan3track $1 $2"); do
-		kill -KILL "$pid" > /dev/null 2>&1
-	done
+	kill -KILL $(pgrep -f "mwan3track $1 $2") > /dev/null 2>&1
+
 	if [ -n "$track_ips" ]; then
 		[ -x /usr/sbin/mwan3track ] && /usr/sbin/mwan3track "$1" "$2" "$3" "$4" $track_ips &
 	fi
