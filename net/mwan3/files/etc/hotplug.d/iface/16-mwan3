@@ -14,7 +14,7 @@ config_get_bool enabled globals 'enabled' '0'
 }
 
 if [ "$ACTION" = "ifup" ]; then
-	mwan3_rtmon
+	mwan3_rtmon_route "$INTERFACE"
 fi
 
 config_get_bool enabled "$INTERFACE" 'enabled' '0'

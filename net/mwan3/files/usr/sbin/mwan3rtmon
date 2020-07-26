@@ -1,5 +1,5 @@
 #!/bin/sh
-
+set -o pipefail
 . /lib/functions.sh
 . /lib/mwan3/mwan3.sh
 
@@ -10,29 +10,26 @@ clean_up() {
 	exit 0
 }
 
-rtchange() {
-	$LOG info "Detect rtchange event."
-}
-
 main() {
-	local rtmon_interval
+	local IP family
 	trap clean_up TERM
-	trap rtchange USR1
 
 	config_load mwan3
-	config_get rtmon_interval globals rtmon_interval '5'
-
-	sleep 3
-	while true; do
+	family=$1
+	[ -z $family ] && family=ipv4
+	if [ "$family" == ipv6 ]; then
+		IP="$IP6"
+	else
+		IP="$IP4"
+	fi
+	$IP monitor route | while read line; do
+		[ -z "${line##*table*}" ] && continue
+		echo "handling route $family $line"
 		mwan3_lock "service" "mwan3rtmon"
-		mwan3_rtmon_route
+		mwan3_rtmon_route_handle "$line" "$family"
 		mwan3_unlock "service" "mwan3rtmon"
-		ret=$?
-		[ "$ret" = "0" ] || break
-		[ "$rtmon_interval" = "0" ] && break
-		sleep "$rtmon_interval" &
-		wait
-	done
+		echo "done handling route $family $line"
+	done &
+	wait 2>/dev/null
 }
-
 main "$@"
