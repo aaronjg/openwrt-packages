@@ -113,6 +113,26 @@ mwan3_rtmon_route_handle()
 		handle_route
 	}
 
+
+	if [ $action = "add" ]; then
+		## handle old routes from 'change' or 'replace'
+		metric=${route_line##*metric }
+		[ "$metric" = "$route_line" ] && unset metric || metric=${metric%% *}
+
+		tos=${route_line##*tos }
+		[ "$tos" = "$route_line" ] && unset tos || tos=${tos%% *}
+
+		dst=${route_line%% *}
+		grep_line="$dst ${tos:+tos $tos}.*table [0-9].*${metric:+metric $metric}"
+		$IP route list table all | grep "$grep_line" | while read line; do
+			tbl=${line##*table }
+			tbl=${tbl%% *}
+			[ $tbl -gt $MWAN3_INTERFACE_MAX ] && continue
+			LOG debug "removing route on ip route change/replace: $line"
+			$IP route del $line
+		done
+	fi
+
 	if [ -n "$tid" ]; then
 		handle_route
 	else
