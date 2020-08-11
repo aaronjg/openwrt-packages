@@ -352,6 +352,52 @@ mwan3_set_custom_ipset()
 	error=$(echo "$update" | $IPS restore 2>&1) || LOG error "set_custom_ipset: $error"
 }
 
+mwan3_load_ipset_rule()
+{
+	local family dir ips
+	local rule=$1
+	local ipv4_used=0
+	local ipv6_used=0
+
+	config_get family $rule family 'any'
+	for dir in src dest; do
+		config_get ips $rule ${dir}_ip
+		if [ -z "$ips" ] || [ -n "${ips##*,*}" ]; then
+			continue
+		fi
+		if [ "$family" = any ]; then
+			mwan3_push_update create mwan3_rule_${rule}_${dir} list:set
+			mwan3_push_update create mwan3_rule_${rule}_${dir}_v4 hash:net
+			mwan3_push_update create mwan3_rule_${rule}_${dir}_v6 hash:net inet6
+			mwan3_push_update add mwan3_rule_${rule}_${dir} mwan3_rule_${rule}_${dir}_v4
+			mwan3_push_update add mwan3_rule_${rule}_${dir} mwan3_rule_${rule}_${dir}_v6
+		elif [ "$family" = ipv4 ]; then
+			mwan3_push_update create mwan3_rule_${rule}_${dir} hash:net
+		else
+			mwan3_push_update create mwan3_rule_${rule}_${dir} hash:net family inet6
+		fi
+		for ip in $(echo "$ips" | awk "BEGIN{RS=\",\"} {a=\"ipv4_\"}/$IPv6_REGEX/{a=\"ipv6_\"}{print a \$1}"); do
+			ip_family=${ip%%_*}
+			ip=${ip##*_}
+			if [ "$family" != "any" ] && [ "$ip_family" != "$family" ]; then
+				LOG warn "invalid ip $ip for rule $rule with family $family"
+				continue
+			fi
+
+			if [ "$family" = "any" ]; then
+				[ "$ip_family" == "ipv4" ] && ipv4_used=1
+				[ "$ip_family" == "ipv6" ] && ipv6_used=1
+				mwan3_push_update add mwan3_rule_${rule}_${dir}_${ip_family##ip} $ip
+			else
+				mwan3_push_update add mwan3_rule_${rule}_${dir} $ip
+			fi
+		done
+		[ "$family" == "any" ] && [ $ipv4_used -eq 0 ] &&
+			LOG warn "Rule: $rule $dir has family 'any' but no ipv4 addresses set"
+		[ "$family" == "any" ] && [ $ipv6_used -eq 0 ] &&
+			LOG warn "Rule: $rule $dir has family 'any' but no ipv6 addresses set"
+	done
+}
 
 mwan3_set_connected_ipv4()
 {
@@ -1023,15 +1069,15 @@ mwan3_set_sticky_iptables()
 
 mwan3_set_user_iptables_rule()
 {
-	local ipset family proto policy src_ip src_port src_iface src_dev
+	local ipset_dest family proto policy src_ip src_port src_iface src_dev
 	local sticky dest_ip dest_port use_policy timeout rule policy
-	local global_logging rule_logging loglevel rule_policy
+	local global_logging rule_logging loglevel rule_policy ipset_src
 
 	rule="$1"
 	rule_policy=0
 	config_get sticky "$1" sticky 0
 	config_get timeout "$1" timeout 600
-	config_get ipset "$1" ipset
+	config_get ipset_dest "$1" ipset
 	config_get proto "$1" proto all
 	config_get src_ip "$1" src_ip
 	config_get src_iface "$1" src_iface
@@ -1048,7 +1094,7 @@ mwan3_set_user_iptables_rule()
 
 	[ -z "$dest_ip" ] && unset dest_ip
 	[ -z "$src_ip" ] && unset src_ip
-	[ -z "$ipset" ] && unset ipset
+	[ -z "$ipset_dest" ] && unset ipset_dest
 	[ -z "$src_port" ]  && unset src_port
 	[ -z "$dest_port" ]  && unset dest_port
 	if [ "$proto"  != 'tcp' ]  && [ "$proto" != 'udp' ]; then
@@ -1068,8 +1114,13 @@ mwan3_set_user_iptables_rule()
 		LOG warn "Rule $1 exceeds max of 15 chars. Not setting rule" && return 0
 	fi
 
-	if [ -n "$ipset" ]; then
-		ipset="-m set --match-set $ipset dst"
+	if [ -n "$src_ip" ] && [ -z "${src_ip##*,*}" ]; then
+		ipset_src=mwan3_rule_${rule}_src
+		unset src_ip
+	fi
+	if [ -n "$dest_ip" ] && [ -z "${dest_ip##*,*}" ]; then
+		ipset_dest=mwan3_rule_${rule}_dest
+		unset dest_ip
 	fi
 
 	if [ -z "$use_policy" ]; then
@@ -1131,12 +1182,13 @@ mwan3_set_user_iptables_rule()
 	if [ "$global_logging" = "1" ] && [ "$rule_logging" = "1" ]; then
 		mwan3_push_update -A mwan3_rules \
 				  -p "$proto" \
-				  ${src_ip:+-s} $src_ip \
-				  ${src_dev:+-i} $src_dev \
-				  ${dest_ip:+-d} $dest_ip \
-				  $ipset \
-				  ${src_port:+-m} ${src_port:+multiport} ${src_port:+--sports} $src_port \
-				  ${dest_port:+-m} ${dest_port:+multiport} ${dest_port:+--dports} $dest_port \
+				  ${src_ip:+-s $src_ip} \
+				  ${src_dev:+-i $src_dev} \
+				  ${dest_ip:+-d $dest_ip} \
+				  ${ipset_dest:+-m set --match-set $ipset_dest dst} \
+				  ${ipset_src:+-m set --match-set $ipset_src src} \
+				  ${src_port:+-m multiport --sports $src_port} \
+				  ${dest_port:+-m multiport --dports $dest_port} \
 				  -m mark --mark 0/$MMX_MASK \
 				  -m comment --comment "$1" \
 				  -j LOG --log-level "$loglevel" --log-prefix "MWAN3($1)"
@@ -1144,12 +1196,13 @@ mwan3_set_user_iptables_rule()
 
 	mwan3_push_update -A mwan3_rules \
 			  -p "$proto" \
-			  ${src_ip:+-s} $src_ip \
-			  ${src_dev:+-i} $src_dev \
-			  ${dest_ip:+-d} $dest_ip \
-			  $ipset \
-			  ${src_port:+-m} ${src_port:+multiport} ${src_port:+--sports} $src_port \
-			  ${dest_port:+-m} ${dest_port:+multiport} ${dest_port:+--dports} $dest_port \
+			  ${src_ip:+-s $src_ip} \
+			  ${src_dev:+-i $src_dev} \
+			  ${dest_ip:+-d $dest_ip} \
+			  ${ipset_dest:+-m set --match-set $ipset_dest dst} \
+			  ${ipset_src:+-m set --match-set $ipset_src src} \
+			  ${src_port:+-m multiport --sports $src_port} \
+			  ${dest_port:+-m multiport --dports $dest_port} \
 			  -m mark --mark 0/$MMX_MASK \
 			  -j $policy
 
@@ -1157,8 +1210,12 @@ mwan3_set_user_iptables_rule()
 
 mwan3_set_user_rules()
 {
-	local IPT IPTR ipv
+	local IPT IPTR ipv error
 	local current update error
+
+	update=""
+	config_foreach mwan3_load_ipset_rule rule
+	error=$(echo "$update" | $IPS restore 2>&1) || LOG error "set_user_rules: $error"
 
 	for ipv in ipv4 ipv6; do
 		if [ "$ipv" = "ipv4" ]; then
