@@ -354,7 +354,7 @@ mwan3_set_custom_ipset()
 
 mwan3_load_ipset_rule()
 {
-	local family dir ips
+	local family dir ips hash_size
 	local rule=$1
 	local ipv4_used=0
 	local ipv6_used=0
@@ -365,16 +365,18 @@ mwan3_load_ipset_rule()
 		if [ -z "$ips" ] || [ -n "${ips##*,*}" ]; then
 			continue
 		fi
+		hash_size=$(echo $ips | grep -o ',' | wc -l)
+		hash_size=$(((hash_size+1)*3 / 2))
 		if [ "$family" = any ]; then
 			mwan3_push_update create mwan3_rule_${rule}_${dir} list:set
-			mwan3_push_update create mwan3_rule_${rule}_${dir}_v4 hash:net
-			mwan3_push_update create mwan3_rule_${rule}_${dir}_v6 hash:net inet6
+			mwan3_push_update create mwan3_rule_${rule}_${dir}_v4 hash:net hashsize $hash_size
+			mwan3_push_update create mwan3_rule_${rule}_${dir}_v6 hash:net hashsize $hash_size family inet6
 			mwan3_push_update add mwan3_rule_${rule}_${dir} mwan3_rule_${rule}_${dir}_v4
 			mwan3_push_update add mwan3_rule_${rule}_${dir} mwan3_rule_${rule}_${dir}_v6
 		elif [ "$family" = ipv4 ]; then
-			mwan3_push_update create mwan3_rule_${rule}_${dir} hash:net
+			mwan3_push_update create mwan3_rule_${rule}_${dir} hash:net hashsize $hash_size
 		else
-			mwan3_push_update create mwan3_rule_${rule}_${dir} hash:net family inet6
+			mwan3_push_update create mwan3_rule_${rule}_${dir} hash:net hashsize $hash_size family inet6
 		fi
 		for ip in $(echo "$ips" | awk "BEGIN{RS=\",\"} {a=\"ipv4_\"}/$IPv6_REGEX/{a=\"ipv6_\"}{print a \$1}"); do
 			ip_family=${ip%%_*}
@@ -403,17 +405,18 @@ mwan3_set_connected_ipv4()
 {
 	local connected_network_v4 candidate_list cidr_list
 	local ipv4regex='[0-9]{1,3}(\.[0-9]{1,3}){3}'
-	$IPS -! create mwan3_connected_v4 hash:net
-	$IPS create mwan3_connected_v4_temp hash:net
 
 	candidate_list=""
 	cidr_list=""
-	route_lists()
-	{
-		$IP4 route | awk '{print $1}'
-		$IP4 route list table 0 | awk '{print $2}'
-	}
-	for connected_network_v4 in $(route_lists | egrep "$ipv4regex"); do
+	route_lists=$( ($IP4 route | awk '{print $1}' ; $IP4 route list table 0 | awk '{print $2}') | egrep "$ipv4regex")
+
+	hash_size=$(echo $route_lists | wc -l)
+	hash_size=$(((hash_size+1)*3 / 2))
+
+	$IPS -! create mwan3_connected_v4 hash:net hashsize $hash_size
+	$IPS create mwan3_connected_v4_temp hash:net hashsize $hash_size
+
+	for connected_network_v4 in $route_lists; do
 		if [ -z "${connected_network_v4##*/*}" ]; then
 			cidr_list="$cidr_list $connected_network_v4"
 		else
@@ -438,20 +441,25 @@ mwan3_set_connected_ipv4()
 
 mwan3_set_connected_iptables()
 {
-	local connected_network_v6 source_network_v6 error
+	local connected_network_v6 source_network_v6 error tmp
 	local update=""
 	mwan3_set_connected_ipv4
 
 	[ $NO_IPV6 -eq 0 ] && {
-		mwan3_push_update -! create mwan3_connected_v6 hash:net family inet6
+		tmp=$($IP6 route | awk '{print $1}' | egrep "$IPv6_REGEX")
+		hash_size=$(echo $tmp | wc -l)
+		hash_size=$(((hash_size)*3 / 2))
+		mwan3_push_update -! create mwan3_connected_v6 hash:net hashsize $hash_size family inet6
 		mwan3_push_update flush mwan3_connected_v6
-
-		for connected_network_v6 in $($IP6 route | awk '{print $1}' | egrep "$IPv6_REGEX"); do
+		for connected_network_v6 in $tmp; do
 			mwan3_push_update -! add mwan3_connected_v6 "$connected_network_v6"
 		done
 
-		mwan3_push_update -! create mwan3_source_v6 hash:net family inet6
-		for source_network_v6 in $($IP6 addr ls | sed -ne 's/ *inet6 \([^ \/]*\).* scope global.*/\1/p'); do
+		tmp=$($IP6 addr ls | sed -ne 's/ *inet6 \([^ \/]*\).* scope global.*/\1/p')
+		hash_size=$(echo $tmp | wc -l)
+		hash_size=$(((hash_size)*3 / 2))
+		mwan3_push_update -! create mwan3_source_v6 hash:net hashsize $hash_size family inet6
+		for source_network_v6 in $tmp; do
 			mwan3_push_update -! add mwan3_source_v6 "$source_network_v6"
 		done
 	}
