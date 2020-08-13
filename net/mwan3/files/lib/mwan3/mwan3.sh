@@ -43,8 +43,7 @@ mwan3_push_update()
 	# helper function to build an update string to pass on to
 	# IPTR or IPS RESTORE. Modifies the 'update' variable in
 	# the local scope.
-	update="$update
-$*";
+	update="$update"$'\n'"$*";
 }
 
 mwan3_update_dev_to_table()
@@ -277,40 +276,48 @@ mwan3_set_connected_ipv4()
 
 	$IPS swap mwan3_connected_v4_temp mwan3_connected_v4
 	$IPS destroy mwan3_connected_v4_temp
+	$IPS -! add mwan3_connected mwan3_connected_v4
 
 }
 
-mwan3_set_connected_iptables()
+mwan3_set_connected_ipv6()
 {
 	local connected_network_v6 source_network_v6 error
 	local update=""
-	mwan3_set_connected_ipv4
+	[ $NO_IPV6 -eq 0 ] || return
 
-	[ $NO_IPV6 -eq 0 ] && {
-		mwan3_push_update -! create mwan3_connected_v6 hash:net family inet6
-		mwan3_push_update flush mwan3_connected_v6
+	mwan3_push_update -! create mwan3_connected_v6 hash:net family inet6
+	mwan3_push_update flush mwan3_connected_v6
 
-		for connected_network_v6 in $($IP6 route | awk '{print $1}' | egrep "$IPv6_REGEX"); do
-			mwan3_push_update -! add mwan3_connected_v6 "$connected_network_v6"
-		done
+	for connected_network_v6 in $($IP6 route | awk '{print $1}' | egrep "$IPv6_REGEX"); do
+		mwan3_push_update -! add mwan3_connected_v6 "$connected_network_v6"
+	done
 
-		mwan3_push_update -! create mwan3_source_v6 hash:net family inet6
-		for source_network_v6 in $($IP6 addr ls | sed -ne 's/ *inet6 \([^ \/]*\).* scope global.*/\1/p'); do
-			mwan3_push_update -! add mwan3_source_v6 "$source_network_v6"
-		done
-	}
+	mwan3_push_update -! create mwan3_source_v6 hash:net family inet6
+	for source_network_v6 in $($IP6 addr ls | sed -ne 's/ *inet6 \([^ \/]*\).* scope global.*/\1/p'); do
+		mwan3_push_update -! add mwan3_source_v6 "$source_network_v6"
+	done
+	mwan3_push_update -! add mwan3_connected mwan3_connected_v6
+	error=$(echo "$update" | $IPS restore 2>&1) || LOG error "set_connected_ipv6: $error"
+}
+
+mwan3_set_connected_ipset()
+{
+	local error
+	local update=""
 
 	mwan3_push_update -! create mwan3_connected list:set
 	mwan3_push_update flush mwan3_connected
-	mwan3_push_update -! add mwan3_connected mwan3_connected_v4
-	[ $NO_IPV6 -eq 0 ] && mwan3_push_update -! add mwan3_connected mwan3_connected_v6
 
 	mwan3_push_update -! create mwan3_dynamic_v4 hash:net
 	mwan3_push_update -! add mwan3_connected mwan3_dynamic_v4
 
-	[ $NO_IPV6 -eq 0 ] && mwan3_push_update -! create mwan3_dynamic_v6 hash:net family inet6
-	[ $NO_IPV6 -eq 0 ] && mwan3_push_update -! add mwan3_connected mwan3_dynamic_v6
-	error=$(echo "$update" | $IPS restore 2>&1) || LOG error "set_connected_iptables: $error"
+	if [ $NO_IPV6 -eq 0 ]; then
+		mwan3_push_update -! create mwan3_dynamic_v6 hash:net family inet6
+		mwan3_push_update -! add mwan3_connected mwan3_dynamic_v6
+	fi
+
+	error=$(echo "$update" | $IPS restore 2>&1) || LOG error "set_connected_ipset: $error"
 }
 
 mwan3_set_general_rules()
@@ -430,16 +437,11 @@ mwan3_create_iface_iptables()
 	[ -n "$id" ] || return 0
 
 	if [ "$family" = "ipv4" ]; then
-		connected_name=mwan3_connected
 		IPT="$IPT4"
 		IPTR="$IPT4R"
-		$IPS -! create $connected_name list:set
-
 	elif [ "$family" = "ipv6" ] && [ $NO_IPV6 -eq 0 ]; then
-		connected_name=mwan3_connected_v6
 		IPT="$IPT6"
 		IPTR="$IPT6R"
-		$IPS -! create $connected_name hash:net family inet6
 	else
 		return
 	fi
@@ -458,7 +460,7 @@ mwan3_create_iface_iptables()
 
 	mwan3_push_update -A "mwan3_iface_in_$1" \
 			  -i "$2" \
-			  -m set --match-set $connected_name src \
+			  -m set --match-set mwan3_connected src \
 			  -m mark --mark 0x0/$MMX_MASK \
 			  -m comment --comment "default" \
 			  -j MARK --set-xmark $MMX_DEFAULT/$MMX_MASK
@@ -540,7 +542,8 @@ mwan3_create_iface_route()
 
 mwan3_add_all_routes()
 {
-	local tid IP IPT route_line ipv family active_tbls tid
+	local tid IP IPT route_line family active_tbls tid
+	local ipv=$1
 
 	add_active_tbls()
 	{
@@ -561,26 +564,24 @@ mwan3_add_all_routes()
 	}
 
 	mwan3_update_dev_to_table
-	for ipv in ipv4 ipv6; do
-		[ "$ipv" = "ipv6" ] && [ $NO_IPV6 -ne 0 ] && continue
-		if [ "$ipv" = "ipv4" ]; then
-			IP="$IP4"
-			IPT="$IPT4"
-		elif [ "$ipv" = "ipv6" ]; then
-			IP="$IP6"
-			IPT="$IPT6"
+	[ "$ipv" = "ipv6" ] && [ $NO_IPV6 -ne 0 ] && return
+	if [ "$ipv" = "ipv4" ]; then
+		IP="$IP4"
+		IPT="$IPT4"
+	elif [ "$ipv" = "ipv6" ]; then
+		IP="$IP6"
+		IPT="$IPT6"
+	fi
+	tid=0
+	active_tbls=" "
+	config_foreach add_active_tbls interface
+	$IP route list table main | sed -ne '/^linkdown/T; s/expires \([0-9]\+\)sec/expires \1/;s/error [0-9]\+//; s/default\(.*\) \(from\|src\) [^ ]*/default\1/; p' | while read route_line; do
+		mwan3_route_line_dev "tid" "$route_line" "$ipv"
+		if [ -n "$tid" ]; then
+			$IP route add table $tid $route_line
+		elif [ -n "${route_line##default*}" ] && [ -n "${route_line##fe80::/64*}" ]; then
+			config_foreach add_route interface
 		fi
-		tid=0
-		active_tbls=" "
-		config_foreach add_active_tbls interface
-		$IP route list table main | sed -ne '/^linkdown/T; s/expires \([0-9]\+\)sec/expires \1/;s/error [0-9]\+//; s/default\(.*\) \(from\|src\) [^ ]*/default\1/; p' | while read route_line; do
-			mwan3_route_line_dev "tid" "$route_line" "$ipv"
-			if [ -n "$tid" ]; then
-				$IP route add table $tid $route_line
-			elif [ -n "${route_line##default*}" ] && [ -n "${route_line##fe80::/64*}" ]; then
-				config_foreach add_route interface
-			fi
-		done
 	done
 }
 mwan3_delete_iface_route()
@@ -679,39 +680,6 @@ mwan3_delete_iface_ipset_entries()
 	done
 }
 
-mwan3_rtmon()
-{
-	local protocol
-	for protocol in "ipv4" "ipv6"; do
-		pid="$(pgrep -f "mwan3rtmon $protocol")"
-		[ "$protocol" = "ipv6" ] && [ $NO_IPV6 -ne 0 ] && continue
-		if [ "${pid}" = "" ]; then
-			[ -x /usr/sbin/mwan3rtmon ] && /usr/sbin/mwan3rtmon $protocol &
-		fi
-	done
-}
-
-mwan3_track()
-{
-	local track_ips pids
-
-	mwan3_list_track_ips()
-	{
-		track_ips="$track_ips $1"
-	}
-	config_list_foreach "$1" track_ip mwan3_list_track_ips
-
-	# don't match device in case it changed from last launch
-	if pids=$(pgrep -f "mwan3track $1 "); then
-		kill -TERM $pids > /dev/null 2>&1
-		sleep 1
-		kill -KILL $(pgrep -f "mwan3track $1 ") > /dev/null 2>&1
-	fi
-
-	if [ -n "$track_ips" ]; then
-		[ -x /usr/sbin/mwan3track ] && MWAN3_STARTUP=0 /usr/sbin/mwan3track "$1" "$2" "$3" "$4" $track_ips &
-	fi
-}
 
 mwan3_set_policy()
 {
@@ -898,7 +866,7 @@ mwan3_set_user_iptables_rule()
 {
 	local ipset family proto policy src_ip src_port src_iface src_dev
 	local sticky dest_ip dest_port use_policy timeout policy
-	local global_logging rule_logging loglevel rule_policy rule ipv
+	local global_logging rule_logging loglevel rule_policy rule ipv ipaddr
 
 	rule="$1"
 	ipv="$2"
@@ -917,6 +885,10 @@ mwan3_set_user_iptables_rule()
 	config_get rule_logging "$1" logging 0
 	config_get global_logging globals logging 0
 	config_get loglevel globals loglevel notice
+
+	[ "$ipv" = "ipv6" ] && [ $NO_IPV6 -ne 0 ] && return
+	[ "$family" = "ipv4" ] && [ "$ipv" = "ipv6" ] && return
+	[ "$family" = "ipv6" ] && [ "$ipv" = "ipv4" ] && return
 
 	if [ -n "$src_iface" ]; then
 		network_get_device src_dev "$src_iface"
@@ -978,10 +950,6 @@ mwan3_set_user_iptables_rule()
 				$IPS -! add "mwan3_sticky_$rule" "mwan3_sticky_v6_$rule"
 		fi
 	fi
-
-	[ "$ipv" = "ipv6" ] && [ $NO_IPV6 -ne 0 ] && return
-	[ "$family" = "ipv4" ] && [ "$ipv" = "ipv6" ] && return
-	[ "$family" = "ipv6" ] && [ "$ipv" = "ipv4" ] && return
 
 	if [ $rule_policy -eq 1 ] && [ -n "${current##*-N $policy$'\n'*}" ]; then
 		mwan3_push_update -N "$policy"
@@ -1102,6 +1070,51 @@ mwan3_set_user_rules()
 
 }
 
+mwan3_ifup() {
+	local device enabled up l3_device status interface true_iface
+
+	interface=$1
+
+	if [ "${MWAN3_STARTUP}" != 1 ]; then
+		# It is not necessary to obtain a lock here, because it is obtained in the hotplug
+		# script, but we still want to do the check to print a useful error message
+		config_load mwan3
+		config_get_bool enabled globals 'enabled' 0
+
+		[ ${enabled} -gt 0 ] || {
+			echo "The service mwan3 is global disabled."
+			echo "Please execute \"/etc/init.d/mwan3 start\" first."
+			exit 1
+		}
+	else
+		enabled=1
+	fi
+	mwan3_get_true_iface true_iface $interface
+	status=$(ubus -S call network.interface.$true_iface status)
+
+	[ -n "$status" ] && {
+		json_load "$status"
+		json_get_vars up l3_device
+	}
+	hotplug_startup()
+	{
+		MWAN3_STARTUP=$MWAN3_STARTUP ACTION=ifup INTERFACE=$interface DEVICE=$l3_device TRUE_INTERFACE=$true_iface sh /etc/hotplug.d/iface/15-mwan3
+		MWAN3_STARTUP=$MWAN3_STARTUP ACTION=ifup INTERFACE=$interface DEVICE=$l3_device TRUE_INTERFACE=$true_iface sh /etc/hotplug.d/iface/16-mwan3-user
+	}
+
+	if [ "$up" != "1" ] || [ -z "$l3_device" ] || [ "$enabled" != "1" ]; then
+		return
+	fi
+
+	if [ "${MWAN3_STARTUP}" = 1 ]; then
+		hotplug_startup &
+		hotplug_pids="$hotplug_pids $!"
+	else
+		hotplug_startup
+	fi
+
+}
+
 mwan3_set_iface_hotplug_state() {
 	local iface=$1
 	local state=$2
@@ -1172,8 +1185,13 @@ mwan3_report_iface_status()
 	config_list_foreach "$1" track_ip mwan3_list_track_ips
 
 	if [ -n "$track_ips" ]; then
-		if [ -n "$(pgrep -f "mwan3track $1 $device")" ]; then
-			tracking="active"
+		pid="$(pgrep -f "mwan3track $1$")"
+		if [ -n "$pid" ]; then
+			if [ "$(cat /proc/$(pgrep -P $pid)/cmdline)" = "sleep${MAX_SLEEP}" ]; then
+				tracking="paused"
+			else
+				tracking="active"
+			fi
 		else
 			tracking="down"
 		fi

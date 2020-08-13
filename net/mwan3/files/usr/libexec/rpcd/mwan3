@@ -82,6 +82,7 @@ get_mwan3_status() {
 	network_get_device device $1
 
 	if [ "${iface}" = "${iface_select}" ] || [ "${iface_select}" = "" ]; then
+		#TODO use procd to see if tracker is running
 		pid="$(pgrep -f "mwan3track $iface $device")"
 		if [ "${pid}" != "" ]; then
 			running="1"

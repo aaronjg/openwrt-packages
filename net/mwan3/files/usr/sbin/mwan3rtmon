@@ -5,6 +5,21 @@
 . /lib/mwan3/mwan3.sh
 . /lib/mwan3/common.sh
 
+trap_with_arg()
+{
+	func="$1" ; shift
+	pid="$1" ; shift
+	for sig ; do
+		trap "$func $sig $pid" "$sig"
+	done
+}
+
+func_trap()
+{
+	kill -${1} ${2} 2>/dev/null
+}
+
+
 mwan3_rtmon_route_handle()
 {
 	config_load mwan3
@@ -72,9 +87,8 @@ mwan3_rtmon_route_handle()
 
 	if [ -n "$tid" ]; then
 		handle_route
-	else
-		[ -n "${route_line##default*}" ] && [ -n "${route_line##fe80::/64*}" ] &&
-			config_foreach handle_route_cb interface
+	elif [ -n "${route_line##default*}" ] && [ -n "${route_line##fe80::/64*}" ]; then
+		config_foreach handle_route_cb interface
 	fi
 }
 
@@ -85,19 +99,35 @@ main()
 	config_load mwan3
 	family=$1
 	[ -z $family ] && family=ipv4
-	if [ "$family" = ipv6 ]; then
+	if [ "$family" = "ipv6" ]; then
+		if [ $NO_IPV6 -ne 0 ]; then
+			LOG warn "mwan3rtmon started for ipv6, but ipv6 not enabled on system"
+			exit 1
+		fi
 		IP="$IP6"
 	else
 		IP="$IP4"
 	fi
 	mwan3_init
-
-	$IP monitor route | while read line; do
-		[ -z "${line##*table*}" ] && continue
-		LOG debug "handling route update $family $line"
-		mwan3_lock "service" "mwan3rtmon"
-		mwan3_rtmon_route_handle "$line" "$family"
-		mwan3_unlock "service" "mwan3rtmon"
-	done
+	mwan3_lock "mwan3rtmon" "start"
+	sh -c "echo \$\$; exec $IP monitor route" | {
+		read monitor_pid
+		trap_with_arg func_trap "$monitor_pid" SIGINT SIGTERM SIGKILL
+		while read line; do
+			[ -z "${line##*table*}" ] && continue
+			LOG debug "handling route update $family $line"
+			mwan3_lock "service" "mwan3rtmon"
+			mwan3_rtmon_route_handle "$line" "$family"
+			mwan3_unlock "service" "mwan3rtmon"
+		done
+	} &
+	child=$!
+	kill -SIGSTOP $child
+	trap_with_arg func_trap "$child" SIGINT SIGTERM SIGKILL
+	mwan3_set_connected_${family}
+	mwan3_add_all_routes ${family}
+	mwan3_unlock "mwan3rtmon" "start"
+	kill -SIGCONT $child
+	wait $!
 }
 main "$@"
