@@ -11,6 +11,12 @@ PING="/bin/ping"
 IFDOWN_EVENT=0
 IFUP_EVENT=0
 
+mwan3_init
+
+WRAP(){
+	FAMILY=$FAMILY DEVICE=$DEVICE SRCIP=$SRC_IP FWMARK=$MMX_DEFAULT LD_PRELOAD=/lib/mwan3/libwrap_mwan3_sockopt.so.1.0 $*
+}
+
 clean_up() {
 	LOG notice "Stopping mwan3track for interface \"${INTERFACE}\""
 	[ -n "$SLEEP_PID" ] && kill "$SLEEP_PID"
@@ -68,6 +74,12 @@ validate_track_method() {
 	esac
 }
 
+validate_wrap() {
+	[ -x /lib/mwan3/libwrap_mwan3_sockopt.so.1.0 ] && return
+	LOG error "Missing libwrap_mwan3_sockopt. Please reinstall mwan3." &&
+		exit 1
+}
+
 disconnected() {
 	STATUS='offline'
 	echo "offline" > $MWAN3TRACK_STATUS_DIR/$INTERFACE/STATUS
@@ -116,17 +128,6 @@ firstconnect() {
 
 	mwan3_get_src_ip SRC_IP $true_iface
 
-	# pinging IPv6 hosts with an interface is troublesome
-	# https://bugs.openwrt.org/index.php?do=details&task_id=2897
-	# https://bugs.openwrt.org/index.php?do=details&task_id=2167
-	# https://forum.openwrt.org/t/ping-and-traceroute-failing-for-eth0-3-on-ipv6/44680/11
-	# so use the IP address of the interface
-	if [ "$family" = "ipv6" ]; then
-		SOURCE="$SRC_IP"
-	else
-		SOURCE="$DEVICE"
-	fi
-
 	LOG debug "firstconnect: called on $INTERFACE/$true_iface ($DEVICE). Status is $STATUS. SRC_IP is $SRC_IP"
 
 	STARTED=1
@@ -153,7 +154,8 @@ main() {
 	local recovery_interval down up size
 	local keep_failure_interval check_quality failure_latency
 	local recovery_latency failure_loss recovery_loss
-	local max_ttl httping_ssl family track_ips
+
+	local max_ttl httping_ssl track_ips
 
 	INTERFACE=$1
 	STATUS=""
@@ -165,6 +167,7 @@ main() {
 	trap if_up USR2
 
 	config_load mwan3
+	config_get FAMILY $INTERFACE family ipv4
 	config_get track_method $INTERFACE track_method ping
 	config_get_bool httping_ssl $INTERFACE httping_ssl 0
 	validate_track_method $track_method $SRC_IP || {
@@ -214,18 +217,12 @@ main() {
 			if [ $host_up_count -lt $reliability ]; then
 				case "$track_method" in
 					ping)
-						# pinging IPv6 hosts with an interface is troublesome
-						# https://bugs.openwrt.org/index.php?do=details&task_id=2897
-						# so get the IP address of the interface and use that instead
-
 						if [ $check_quality -eq 0 ]; then
-							$PING -${family#ipv} -I ${SRC_IP:-$DEVICE} -c $count -W $timeout -s $size -t $max_ttl -q $track_ip &> /dev/null
+							WRAP $PING -${FAMILY#ipv} -c $count -W $timeout -s $size -t $max_ttl -q $track_ip &> /dev/null
 							result=$?
 						else
-							ping_result_raw="$($PING -${family#ipv} -I ${SRC_IP:-$DEVICE} -c $count -W $timeout -s $size -t $max_ttl -q $track_ip 2>/dev/null)"
-
+							ping_result_raw="$(WRAP $PING -${FAMILY#ipv} -c $count -W $timeout -s $size -t $max_ttl -q $track_ip 2>/dev/null)"
 							ping_status=$?
-
 							ping_result=$(echo "$ping_result_raw" | tail -n2)
 							loss="$(echo "$ping_result" | grep "packet loss" | cut -d "," -f3 | awk '{print $1}' | sed -e 's/%//')"
 							if [ "$ping_status" -ne 0 ] || [ "$loss" -eq 100 ]; then
@@ -237,28 +234,28 @@ main() {
 						fi
 					;;
 					arping)
-						arping -I $DEVICE -c $count -w $timeout -q $track_ip &> /dev/null
+						WRAP arping -I $DEVICE -c $count -w $timeout -q $track_ip &> /dev/null
 						result=$?
 					;;
 					httping)
 						if [ "$httping_ssl" -eq 1 ]; then
-							httping -y $SRC_IP -c $count -t $timeout -q "https://$track_ip" &> /dev/null
+							WRAP httping -c $count -t $timeout -q "https://$track_ip" &> /dev/null
 						else
-							httping -y $SRC_IP -c $count -t $timeout -q "http://$track_ip" &> /dev/null
+							WRAP httping -c $count -t $timeout -q "http://$track_ip" &> /dev/null
 						fi
 						result=$?
 					;;
 					nping-tcp)
-						result=$(nping -e $DEVICE -c $count $track_ip --tcp | grep Lost | awk '{print $12}')
+						result=$(WRAP nping -c $count $track_ip --tcp | grep Lost | awk '{print $12}')
 					;;
 					nping-udp)
-						result=$(nping -e $DEVICE -c $count $track_ip --udp | grep Lost | awk '{print $12}')
+						result=$(WRAP nping -c $count $track_ip --udp | grep Lost | awk '{print $12}')
 					;;
 					nping-icmp)
-						result=$(nping -e $DEVICE -c $count $track_ip --icmp | grep Lost | awk '{print $12}')
+						result=$(WRAP nping -c $count $track_ip --icmp | grep Lost | awk '{print $12}')
 					;;
 					nping-arp)
-						result=$(nping -e $DEVICE -c $count $track_ip --arp | grep Lost | awk '{print $12}')
+						result=$(WRAP nping -c $count $track_ip --arp | grep Lost | awk '{print $12}')
 					;;
 				esac
 				if [ $check_quality -eq 0 ]; then
