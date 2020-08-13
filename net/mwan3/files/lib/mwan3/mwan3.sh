@@ -2,8 +2,6 @@
 
 . /usr/share/libubox/jshn.sh
 
-IP4="ip -4"
-IP6="ip -6"
 IPS="ipset"
 IPT4="iptables -t mangle -w"
 IPT6="ip6tables -t mangle -w"
@@ -24,7 +22,6 @@ IPv6_REGEX="${IPv6_REGEX}::(ffff(:0{1,4}){0,1}:){0,1}((25[0-5]|(2[0-4]|1{0,1}[0-
 IPv6_REGEX="${IPv6_REGEX}([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])"
 
 MWAN3_STATUS_DIR="/var/run/mwan3"
-MWAN3TRACK_STATUS_DIR="/var/run/mwan3track"
 MWAN3_INTERFACE_MAX=""
 DEFAULT_LOWEST_METRIC=256
 MMX_MASK=""
@@ -79,20 +76,6 @@ mwan3_update_iface_to_table()
 		export mwan3_iface_tbl="${mwan3_iface_tbl}${1}=$_tid "
 	}
 	config_foreach update_table interface
-}
-
-mwan3_get_true_iface()
-{
-	local family V
-	_true_iface=$2
-	config_get family "$iface" family ipv4
-	if [ "$family" = "ipv4" ]; then
-		V=4
-	elif [ "$family" = "ipv6" ]; then
-		V=6
-	fi
-	ubus call "network.interface.${iface}_${V}" status &>/dev/null && _true_iface="${iface}_${V}"
-	export "$1=$_true_iface"
 }
 
 mwan3_route_line_dev()
@@ -197,22 +180,6 @@ mwan3_unlock() {
 	lock -u /var/run/mwan3.lock
 }
 
-mwan3_get_src_ip()
-{
-	local family _src_ip true_iface
-	true_iface=$2
-	unset "$1"
-	config_get family "$true_iface" family ipv4
-	if [ "$family" = "ipv4" ]; then
-		network_get_ipaddr _src_ip "$true_iface"
-		[ -n "$_src_ip" ] || _src_ip="0.0.0.0"
-	elif [ "$family" = "ipv6" ]; then
-		network_get_ipaddr6 _src_ip "$true_iface"
-		[ -n "$_src_ip" ] || _src_ip="::"
-	fi
-	export "$1=$_src_ip"
-}
-
 mwan3_get_iface_id()
 {
 	local _tmp
@@ -299,7 +266,7 @@ mwan3_set_connected_ipv4()
 
 mwan3_set_connected_iptables()
 {
-	local connected_network_v6 source_network_v6 error
+	local connected_network_v6 error
 	local update=""
 	mwan3_set_connected_ipv4
 
@@ -311,10 +278,6 @@ mwan3_set_connected_iptables()
 			mwan3_push_update -! add mwan3_connected_v6 "$connected_network_v6"
 		done
 
-		mwan3_push_update -! create mwan3_source_v6 hash:net family inet6
-		for source_network_v6 in $($IP6 addr ls | sed -ne 's/ *inet6 \([^ \/]*\).* scope global.*/\1/p'); do
-			mwan3_push_update -! add mwan3_source_v6 "$source_network_v6"
-		done
 	}
 
 	mwan3_push_update -! create mwan3_connected list:set
@@ -395,12 +358,6 @@ mwan3_set_general_iptables()
 						  -p ipv6-icmp \
 						  -m icmp6 --icmpv6-type 137 \
 						  -j RETURN
-				# do not mangle outgoing echo request
-				mwan3_push_update -A mwan3_hook \
-						  -m set --match-set mwan3_source_v6 src \
-						  -p ipv6-icmp \
-						  -m icmp6 --icmpv6-type 128 \
-						  -j RETURN
 
 			fi
 			mwan3_push_update -A mwan3_hook \
@@ -425,6 +382,10 @@ mwan3_set_general_iptables()
 			mwan3_push_update -A PREROUTING -j mwan3_hook
 		fi
 		if [ -n "${current##*-A OUTPUT -j mwan3_hook*}" ]; then
+			mwan3_push_update -A OUTPUT \
+                                          -m owner \
+                                          --uid-owner $(id -u mwan3) \
+                                          -j RETURN
 			mwan3_push_update -A OUTPUT -j mwan3_hook
 		fi
 		mwan3_push_update COMMIT

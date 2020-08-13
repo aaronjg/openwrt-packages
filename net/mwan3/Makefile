@@ -25,6 +25,8 @@ define Package/mwan3
      +iptables \
      +iptables-mod-conntrack-extra \
      +iptables-mod-ipopt \
+     +iptables-mod-extra \
+     +libcap-bin \
      +jshn
    TITLE:=Multiwan hotplug script with connection tracking support
    MAINTAINER:=Florian Eckert <fe@dev.tdt.de>

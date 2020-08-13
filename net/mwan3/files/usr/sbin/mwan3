@@ -153,6 +153,7 @@ start()
 	local enabled hotplug_pids MWAN3_STARTUP
 	MWAN3_STARTUP=1
 	mwan3_lock "command" "mwan3"
+	user_exists mwan3 || user_add mwan3
 	uci_toggle_state mwan3 globals enabled "1"
 	config_load mwan3
 
@@ -216,6 +217,7 @@ stop()
 		table="$($IPT -S)"
 		{
 			echo "*mangle";
+			[ -z "${table##*OUTPUT -m owner --uid-owner $(id -u mwan3)*}" ] && echo "-D OUTPUT -m owner --uid-owner $(id -u mwan3) -j RETURN"
 			[ -z "${table##*PREROUTING -j mwan3_hook*}" ] && echo "-D PREROUTING -j mwan3_hook"
 			[ -z "${table##*OUTPUT -j mwan3_hook*}" ] && echo "-D OUTPUT -j mwan3_hook"
 			echo "$table" | awk '{print "-F "$2}' | grep mwan3 | sort -u

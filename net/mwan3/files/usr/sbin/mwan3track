@@ -10,6 +10,10 @@ PING="/bin/ping"
 IFDOWN_EVENT=0
 IFUP_EVENT=0
 
+CAPSH(){
+	capsh --caps="cap_net_raw+eip cap_setpcap,cap_setuid,cap_setgid+ep" --keep=1 --user=mwan3 --addamb=cap_net_raw --  -c "$*"
+}
+
 clean_up() {
 	LOG notice "Stopping mwan3track for interface \"${INTERFACE}\""
 	exit 0
@@ -62,6 +66,13 @@ validate_track_method() {
 	esac
 }
 
+validate_capsh() {
+
+	command -v capsh &>/dev/null && return
+	LOG error "Missing capsh. Please install libcap-bin. Tracking disabled." &&
+		exit 1
+}
+
 disconnected() {
 	echo "offline" > /var/run/mwan3track/$INTERFACE/STATUS
 	echo "$(get_uptime)" > /var/run/mwan3track/$INTERFACE/OFFLINE
@@ -105,11 +116,11 @@ update_status() {
 }
 
 main() {
-	local reliability count timeout interval failure_interval
+	local reliability count timeout interval failure_interval family
 	local recovery_interval down up size
 	local keep_failure_interval check_quality failure_latency
 	local recovery_latency failure_loss recovery_loss
-	local max_ttl httping_ssl
+	local max_ttl httping_ssl family
 
 	[ -z "$5" ] && echo "Error: should not be started manually" && exit 0
 
@@ -117,12 +128,16 @@ main() {
 	DEVICE=$2
 	STATUS=$3
 	SRC_IP=$4
+
+	validate_capsh
+
 	mkdir -p /var/run/mwan3track/$INTERFACE
 	trap clean_up TERM
 	trap if_down USR1
 	trap if_up USR2
 
 	config_load mwan3
+	config_get family $INTERFACE family ipv4
 	config_get track_method $INTERFACE track_method ping
 	config_get_bool httping_ssl $INTERFACE httping_ssl 0
 	validate_track_method $track_method $SRC_IP || {
@@ -151,13 +166,23 @@ main() {
 	config_get failure_loss $INTERFACE failure_loss 40
 	config_get recovery_loss $INTERFACE recovery_loss 10
 
+	local sleep_time result ping_result ping_result_raw ping_status loss latency source
 	local score=$(($down+$up))
 	local track_ips=$(echo $* | cut -d ' ' -f 5-99)
 	local host_up_count=0
 	local lost=0
 	local turn=0
-	local ping_protocol=4
-	local sleep_time result ping_result ping_result_raw  ping_status loss latency
+
+	# pinging IPv6 hosts with an interface is troublesome
+	# https://bugs.openwrt.org/index.php?do=details&task_id=2897
+        # https://bugs.openwrt.org/index.php?do=details&task_id=2167
+        # https://forum.openwrt.org/t/ping-and-traceroute-failing-for-eth0-3-on-ipv6/44680/11
+	# so use the IP address of the interface
+        if [ "$family" = "ipv6" ]; then
+                source="$SRC_IP"
+        else
+                source="$DEVICE"
+        fi
 
 	firstconnect
 	while true; do
@@ -168,19 +193,11 @@ main() {
 			if [ $host_up_count -lt $reliability ]; then
 				case "$track_method" in
 					ping)
-						# pinging IPv6 hosts with an interface is troublesome
-						# https://bugs.openwrt.org/index.php?do=details&task_id=2897
-						# so get the IP address of the interface and use that instead
-						if [ -z ${track_ip##*:*} ]; then
-							ping_protocol=6
-						else
-							unset SRC_IP
-						fi
 						if [ $check_quality -eq 0 ]; then
-							$PING -$ping_protocol -I ${SRC_IP:-$DEVICE} -c $count -W $timeout -s $size -t $max_ttl -q $track_ip &> /dev/null
+							CAPSH $PING -${family#ipv} -I $source -c $count -W $timeout -s $size -t $max_ttl -q $track_ip &> /dev/null
 							result=$?
 						else
-							ping_result_raw="$($PING -$ping_protocol -I ${SRC_IP:-$DEVICE} -c $count -W $timeout -s $size -t $max_ttl -q $track_ip 2>/dev/null)"
+							ping_result_raw="$(CAPSH $PING -${family#ipv} -I $source -c $count -W $timeout -s $size -t $max_ttl -q $track_ip 2>/dev/null)"
 							ping_status=$?
 							ping_result=$(echo "$ping_result_raw" | tail -n2)
 							loss="$(echo "$ping_result" | grep "packet loss" |  cut -d "," -f3 | awk '{print $1}' | sed -e 's/%//')"
@@ -193,28 +210,28 @@ main() {
 						fi
 					;;
 					arping)
-						arping -I $DEVICE -c $count -w $timeout -q $track_ip &> /dev/null
+						CAPSH arping -I $source -c $count -w $timeout -q $track_ip &> /dev/null
 						result=$?
 					;;
 					httping)
 						if [ "$httping_ssl" -eq 1 ]; then
-							httping -y $SRC_IP -c $count -t $timeout -q "https://$track_ip" &> /dev/null
+							CAPSH httping -y $SRC_IP -c $count -t $timeout -q "https://$track_ip" &> /dev/null
 						else
-							httping -y $SRC_IP -c $count -t $timeout -q "http://$track_ip" &> /dev/null
+							CAPSH httping -y $SRC_IP -c $count -t $timeout -q "http://$track_ip" &> /dev/null
 						fi
 						result=$?
 					;;
 					nping-tcp)
-						result=$(nping -e $DEVICE -c $count $track_ip --tcp | grep Lost | awk '{print $12}')
+						result=$(CAPSH nping -e $source -c $count $track_ip --tcp | grep Lost | awk '{print $12}')
 					;;
 					nping-udp)
-						result=$(nping -e $DEVICE -c $count $track_ip --udp | grep Lost | awk '{print $12}')
+						result=$(CAPSH nping -e $source -c $count $track_ip --udp | grep Lost | awk '{print $12}')
 					;;
 					nping-icmp)
-						result=$(nping -e $DEVICE -c $count $track_ip --icmp | grep Lost | awk '{print $12}')
+						result=$(CAPSH nping -e $source -c $count $track_ip --icmp | grep Lost | awk '{print $12}')
 					;;
 					nping-arp)
-						result=$(nping -e $DEVICE -c $count $track_ip --arp | grep Lost | awk '{print $12}')
+						result=$(CAPSH nping -e $source -c $count $track_ip --arp | grep Lost | awk '{print $12}')
 					;;
 				esac
 				if [ $check_quality -eq 0 ]; then
