@@ -180,6 +180,7 @@ mwan3_unlock() {
 	lock -u /var/run/mwan3.lock
 }
 
+
 mwan3_get_iface_id()
 {
 	local _tmp
@@ -484,43 +485,7 @@ mwan3_delete_iface_iptables()
 
 mwan3_create_iface_route()
 {
-	local id via metric V V_ IP family
-	local iface device cmd true_iface
-
-	iface=$1
-	device=$2
-	config_get family "$iface" family ipv4
-	mwan3_get_iface_id id "$iface"
-
-	[ -n "$id" ] || return 0
-
-	mwan3_get_true_iface true_iface $iface
-	if [ "$family" = "ipv4" ]; then
-		V_=""
-		IP="$IP4"
-	elif [ "$family" = "ipv6" ]; then
-		V_=6
-		IP="$IP6"
-	fi
-
-	network_get_gateway${V_} via "$true_iface"
-
-	{ [ -z "$via" ] || [ "$via" = "0.0.0.0" ] || [ "$via" = "::" ] ; } && unset via
-
-	network_get_metric metric "$true_iface"
-
-	$IP route flush table "$id"
-	cmd="$IP route add table $id default \
-	     ${via:+via} $via \
-	     ${metric:+metric} $metric \
-	     dev $2"
-	$cmd || LOG warn "ip cmd failed $cmd"
-
-}
-
-mwan3_add_non_default_iface_route()
-{
-	local tid route_line family IP id
+	local tid route_line family IP id tbl
 	config_get family "$1" family ipv4
 	mwan3_get_iface_id id "$1"
 
@@ -532,10 +497,15 @@ mwan3_add_non_default_iface_route()
 		IP="$IP6"
 	fi
 
+	tbl=$($IP route list table $id 2>/dev/null)
 	mwan3_update_dev_to_table
-	$IP route list table main  | grep -v "^default\|linkdown\|^::/0\|^fe80::/64\|^unreachable" | while read route_line; do
+	$IP route list table main  | grep -v "^linkdown\|^::/0\|^fe80::/64\|^unreachable" | while read route_line; do
 		mwan3_route_line_dev "tid" "$route_line" "$family"
+		[ -z "${route_line##default*}" ] && [ "$tid" != "$id" ] && continue
 		if [ -z "$tid" ] || [ "$tid" = "$id" ]; then
+			# possible that routes are already in the table
+			# if 'connected' was called after 'ifup'
+			[ -n "$tbl" ] && [ -z "${tbl##*$route_line*}" ] && return
 			$IP route add table $id $route_line ||
 				LOG warn "failed to add $route_line to table $id"
 		fi
@@ -543,16 +513,16 @@ mwan3_add_non_default_iface_route()
 	done
 }
 
-mwan3_add_all_nondefault_routes()
+mwan3_add_all_routes()
 {
-	local tid IP route_line ipv family active_tbls tid
+	local tid IP IPT route_line ipv family active_tbls tid
 
 	add_active_tbls()
 	{
 		let tid++
 		config_get family "$1" family ipv4
 		[ "$family" != "$ipv" ] && return
-		$IP route list table $tid 2>/dev/null | grep -q "^default\|^::/0" && {
+		$IPT -S "mwan3_iface_in_$1" &> /dev/null  && {
 			active_tbls="$active_tbls${tid} "
 		}
 	}
@@ -570,18 +540,21 @@ mwan3_add_all_nondefault_routes()
 		[ "$ipv" = "ipv6" ] && [ $NO_IPV6 -ne 0 ] && continue
 		if [ "$ipv" = "ipv4" ]; then
 			IP="$IP4"
+			IPT="$IPT4"
 		elif [ "$ipv" = "ipv6" ]; then
 			IP="$IP6"
+			IPT="$IPT6"
 		fi
 		tid=0
 		active_tbls=" "
 		config_foreach add_active_tbls interface
-		$IP route list table main  | grep -v "^default\|linkdown\|^::/0\|^fe80::/64\|^unreachable" | while read route_line; do
+		$IP route list table main  | grep -v "^linkdown\|^::/0\|^fe80::/64\|^unreachable" | while read route_line; do
 			mwan3_route_line_dev "tid" "$route_line" "$ipv"
 			if [ -n "$tid" ]; then
 				$IP route add table $tid $route_line
 			else
-				config_foreach add_route interface
+				[ -n "${route_line##default*}" ] &&
+					config_foreach add_route interface
 			fi
 		done
 	done
