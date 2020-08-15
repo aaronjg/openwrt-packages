@@ -69,8 +69,7 @@ case "$ACTION" in
 		mwan3_create_iface_iptables $INTERFACE $DEVICE
 		mwan3_create_iface_rules $INTERFACE $DEVICE
 		if [ "$ACTION" = "ifup" ]; then
-			mwan3_create_iface_route $INTERFACE $DEVICE
-			[ "$MWAN3_STARTUP" != 1 ] && mwan3_add_non_default_iface_route $INTERFACE $DEVICE
+			[ "$MWAN3_STARTUP" != 1 ] && mwan3_create_iface_route $INTERFACE $DEVICE
 		fi
 		mwan3_set_iface_hotplug_state $INTERFACE "$binary_status"
 
