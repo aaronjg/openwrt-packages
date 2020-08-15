@@ -8,47 +8,55 @@
 mwan3_rtmon_route_handle()
 {
 	config_load mwan3
-	local section action route_line family tbl device metric tos dst line
-	local route_device tid
+	local section action route_line family tbl device line route_line_exp tid
 	route_line=${1##"Deleted "}
 	route_family=$2
+
+	if [ "$route_line" == "$1" ]; then
+		action="replace"
+		route_line_exp='s/expires \([0-9]\+\)sec/expires \1/;s/error [0-9]\+//; s/default\(.*\) \(from\|src\) [^ ]*/default\1/'
+		$IPS -! add mwan3_connected_${route_family##ip} ${route_line%% *}
+	else
+		action="del"
+		route_line_exp='s/expires [0-9]\+sec//;s/error [0-9]\+//; s/default from [^ ]*/default/'
+		mwan3_set_connected_${route_family}
+	fi
 
 	if [ "$route_family" = "ipv4" ]; then
 		IP="$IP4"
 	elif [ "$route_family" = "ipv6" ] && [ $NO_IPV6 -eq 0 ]; then
 		IP="$IP6"
+		route_line=$(echo "$route_line" | sed "$route_line_exp")
 	else
+		LOG warn "route update called with invalid family - $route_family"
 		return
 	fi
 
-	if [ "$route_line" == "$1" ]; then
-		action="add"
-	else
-		action="del"
+	# don't try to add routes when link has gone down
+	if [ -z "${route_line##linkdown*}" ]; then
+		LOG debug "not adding route due to linkdown - skipping $route_line"
+		return
 	fi
 
-	# never add default route lines, since this is handled elsewhere
-	[ -z "${route_line##default*}" ] && return
-	[ -z "${route_line##::/0*}" ] && return
-	route_line=${route_line%% linkdown*}
-	route_line=${route_line%% unreachable*}
-	mwan3_update_dev_to_table
-	mwan3_route_line_dev "tid" "$route_line" "$route_family"
 	handle_route() {
-		tbl=$($IP route list table $tid)
-		if [ $action = "add" ]; then
-			echo "$tbl" | grep -q "^default\|^::/0" || return
-		else
-			[ -z "$tbl" ] && return
-		fi
-		# check that action needs to be performed. May not need to take action if:
-		# Got a route update on ipv6 where route is already in the table
-		# Got a delete event, but table was already flushed
 
-		[ $action = "add" ] && [ -z "${tbl##*$route_line*}" ] && return
-		[ $action = "del" ] && [ -n "${tbl##*$route_line*}" ] && return
+		tbl=$($IP route list table $tid 2>/dev/null)
+
+	        if [ "$(cat /var/run/mwan3track/$section/STATUS)" != "online" ]; then
+			LOG debug "interface $section is offline - skipping $route_line";
+			return
+		fi
+
+		# check that action needs to be performed. May not need to take action if we
+		# got a delete event, but table was already flushed
+
+		if [ $action = "del" ] && [ -n "${tbl##*$route_line*}" ]; then
+			LOG debug "skipping already deleted route table $tid - skipping $route_line"
+			return
+		fi
+
 		network_get_device device "$section"
-		LOG debug "adjusting route $device: $IP route "$action" table $tid $route_line"
+		LOG debug "adjusting route $device: $IP route $action table $tid $route_line"
 		$IP route "$action" table $tid $route_line ||
 			LOG warn "failed: $IP route $action table $tid $route_line"
 	}
@@ -59,29 +67,14 @@ mwan3_rtmon_route_handle()
 		handle_route
 	}
 
-	if [ $action = "add" ]; then
-		## handle old routes from 'change' or 'replace'
-		metric=${route_line##*metric }
-		[ "$metric" = "$route_line" ] && unset metric || metric=${metric%% *}
-
-		tos=${route_line##*tos }
-		[ "$tos" = "$route_line" ] && unset tos || tos=${tos%% *}
-
-		dst=${route_line%% *}
-		grep_line="$dst ${tos:+tos $tos}.*table [0-9].*${metric:+metric $metric}"
-		$IP route list table all | grep "$grep_line" | while read line; do
-			tbl=${line##*table }
-			tbl=${tbl%% *}
-			[ $tbl -gt $MWAN3_INTERFACE_MAX ] && continue
-			LOG debug "removing route on ip route change/replace: $line"
-			$IP route del $line
-		done
-	fi
+	mwan3_update_dev_to_table
+	mwan3_route_line_dev "tid" "$route_line" "$route_family"
 
 	if [ -n "$tid" ]; then
 		handle_route
 	else
-		config_foreach handle_route_cb interface
+		[ -n "${route_line##default*}" ] && [ -n "${route_line##fe80::/64*}" ] &&
+			config_foreach handle_route_cb interface
 	fi
 }
 
