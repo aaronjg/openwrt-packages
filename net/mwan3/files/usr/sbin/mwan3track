@@ -6,7 +6,6 @@
 
 INTERFACE=""
 DEVICE=""
-PING="/bin/ping"
 
 IFDOWN_EVENT=0
 IFUP_EVENT=0
@@ -40,10 +39,19 @@ if_up() {
 validate_track_method() {
 	case "$1" in
 		ping)
-			[ -x "$PING" ] || {
-				LOG warn "Missing ping. Please enable ping util and recompile busybox."
+			if [ -x "/usr/bin/ping" ] && [ $(/usr/bin/ping -V | grep -o '[0-9]*$') -gt 20150519 ]; then
+				# -4 option added in iputils c3e68ac6
+				PING="/usr/bin/ping -${FAMILY#ipv}"
+			elif [ "$FAMILY" = "ipv6" ] && [ -x "/usr/bin/ping6" ]; then
+				PING="/usr/bin/ping6"
+			elif [ "$FAMILY" = "ipv4" ] && [ -x "/usr/bin/ping" ]; then
+				PING="/usr/bin/ping"
+			elif [ -x "/bin/ping" ]; then
+				PING="/bin/ping -${FAMILY#ipv}"
+			else
+				LOG warn "Missing ping. Please enable BUSYBOX_DEFAULT_PING and recompile busybox or install iputils-ping package."
 				return 1
-			}
+			fi
 			;;
 		arping)
 			command -v arping 1>/dev/null 2>&1 || {
@@ -218,10 +226,10 @@ main() {
 				case "$track_method" in
 					ping)
 						if [ $check_quality -eq 0 ]; then
-							WRAP $PING -${FAMILY#ipv} -c $count -W $timeout -s $size -t $max_ttl -q $track_ip &> /dev/null
+							WRAP $PING -c $count -W $timeout -s $size -t $max_ttl -q $track_ip &> /dev/null
 							result=$?
 						else
-							ping_result_raw="$(WRAP $PING -${FAMILY#ipv} -c $count -W $timeout -s $size -t $max_ttl -q $track_ip 2>/dev/null)"
+							ping_result_raw="$(WRAP $PING -c $count -W $timeout -s $size -t $max_ttl -q $track_ip 2>/dev/null)"
 							ping_status=$?
 							ping_result=$(echo "$ping_result_raw" | tail -n2)
 							loss="$(echo "$ping_result" | grep "packet loss" | cut -d "," -f3 | awk '{print $1}' | sed -e 's/%//')"
