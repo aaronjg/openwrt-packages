@@ -450,7 +450,7 @@ mwan3_create_iface_iptables()
 		mwan3_push_update -N mwan3_ifaces_in
 	fi
 
-	if [ -n "${current##*-N mwan3_iface_in_$1$'\n'*}" ];  then
+	if [ -n "${current##*-N mwan3_iface_in_$1$'\n'*}" ]; then
 		mwan3_push_update -N "mwan3_iface_in_$1"
 	else
 		mwan3_push_update -F "mwan3_iface_in_$1"
