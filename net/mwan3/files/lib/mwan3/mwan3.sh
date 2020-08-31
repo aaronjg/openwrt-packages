@@ -22,6 +22,7 @@ IPv6_REGEX="${IPv6_REGEX}:((:[0-9a-fA-F]{1,4}){1,7}|:)|"
 IPv6_REGEX="${IPv6_REGEX}fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}|"
 IPv6_REGEX="${IPv6_REGEX}::(ffff(:0{1,4}){0,1}:){0,1}((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])|"
 IPv6_REGEX="${IPv6_REGEX}([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])"
+IPv4_REGEX="((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)"
 
 MWAN3_STATUS_DIR="/var/run/mwan3"
 MWAN3TRACK_STATUS_DIR="/var/run/mwan3track"
@@ -245,7 +246,6 @@ mwan3_set_custom_ipset()
 mwan3_set_connected_ipv4()
 {
 	local connected_network_v4 candidate_list cidr_list
-	local ipv4regex='[0-9]{1,3}(\.[0-9]{1,3}){3}'
 	$IPS -! create mwan3_connected_v4 hash:net
 	$IPS create mwan3_connected_v4_temp hash:net
 
@@ -256,7 +256,7 @@ mwan3_set_connected_ipv4()
 		$IP4 route | awk '{print $1}'
 		$IP4 route list table 0 | awk '{print $2}'
 	}
-	for connected_network_v4 in $(route_lists | egrep "$ipv4regex"); do
+	for connected_network_v4 in $(route_lists | egrep "$IPv4_REGEX"); do
 		if [ -z "${connected_network_v4##*/*}" ]; then
 			cidr_list="$cidr_list $connected_network_v4"
 		else
@@ -889,6 +889,14 @@ mwan3_set_user_iptables_rule()
 	[ "$ipv" = "ipv6" ] && [ $NO_IPV6 -ne 0 ] && return
 	[ "$family" = "ipv4" ] && [ "$ipv" = "ipv6" ] && return
 	[ "$family" = "ipv6" ] && [ "$ipv" = "ipv4" ] && return
+
+	for ipaddr in "$src_ip" "$dest_ip"; do
+		if [ -n "$ipaddr" ] && { { [ "$ipv" = "ipv4" ] && echo "$ipaddr" | grep -qE $IPv6_REGEX; } ||
+						 { [ "$ipv" = "ipv6" ] && echo "$ipaddr" | grep -qE $IPv4_REGEX; } }; then
+			LOG warn "invalid $ipv address $ipaddr specified for rule $rule"
+			return
+		fi
+	done
 
 	if [ -n "$src_iface" ]; then
 		network_get_device src_dev "$src_iface"
