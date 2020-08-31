@@ -99,7 +99,7 @@ mwan3_route_line_dev()
 {
 	# must have mwan3 config already loaded
 	# arg 1 is route device
-	local  _tid route_line route_device route_family entry curr_table
+	local _tid route_line route_device route_family entry curr_table
 	route_line=$2
 	route_family=$3
 	route_device=$(echo "$route_line" | sed -ne "s/.*dev \([^ ]*\).*/\1/p")
@@ -220,7 +220,6 @@ mwan3_get_iface_id()
 	_tmp="${mwan3_iface_tbl##* ${2}=}"
 	_tmp=${_tmp%% *}
 	export "$1=$_tmp"
-	new_val=$_tmp
 }
 
 mwan3_set_custom_ipset_v4()
@@ -466,7 +465,7 @@ mwan3_create_iface_iptables()
 		mwan3_push_update -N mwan3_ifaces_in
 	fi
 
-	if  [ -n "${current##*-N mwan3_iface_in_$1*}" ]; then
+	if [ -n "${current##*-N mwan3_iface_in_$1*}" ]; then
 		mwan3_push_update -N "mwan3_iface_in_$1"
 	else
 		mwan3_push_update -F "mwan3_iface_in_$1"
@@ -484,13 +483,13 @@ mwan3_create_iface_iptables()
 			  -m comment --comment "$1" \
 			  -j MARK --set-xmark $(mwan3_id2mask id MMX_MASK)/$MMX_MASK
 
-	if  [ -n "${current##*-A mwan3_ifaces_in -m mark --mark 0x0/$MMX_MASK -j mwan3_iface_in_${1}*}" ]; then
+	if [ -n "${current##*-A mwan3_ifaces_in -m mark --mark 0x0/$MMX_MASK -j mwan3_iface_in_${1}*}" ]; then
 		mwan3_push_update -A mwan3_ifaces_in \
 				  -m mark --mark 0x0/$MMX_MASK \
 				  -j "mwan3_iface_in_$1"
-		LOG debug "create_iface_iptables:  mwan3_iface_in_$1 not in iptables, adding"
+		LOG debug "create_iface_iptables: mwan3_iface_in_$1 not in iptables, adding"
 	else
-		LOG debug "create_iface_iptables:  mwan3_iface_in_$1 already in iptables, skip"
+		LOG debug "create_iface_iptables: mwan3_iface_in_$1 already in iptables, skip"
 	fi
 
 	mwan3_push_update COMMIT
@@ -858,7 +857,7 @@ mwan3_create_policies_iptables()
 		current="$($IPT -S)"
 		update="*mangle"
 		if [ -n "${current##*-N mwan3_policy_$1*}" ]; then
-			mwan3_push_update  -N "mwan3_policy_$1"
+			mwan3_push_update -N "mwan3_policy_$1"
 		fi
 
 		mwan3_push_update -F "mwan3_policy_$1"
@@ -932,7 +931,7 @@ mwan3_set_user_iptables_rule()
 {
 	local ipset family proto policy src_ip src_port src_iface src_dev
 	local sticky dest_ip dest_port use_policy timeout policy
-	local global_logging rule_logging loglevel rule_policy  rule ipv
+	local global_logging rule_logging loglevel rule_policy rule ipv
 
 	rule="$1"
 	ipv="$2"
@@ -963,9 +962,9 @@ mwan3_set_user_iptables_rule()
 	[ -z "$dest_ip" ] && unset dest_ip
 	[ -z "$src_ip" ] && unset src_ip
 	[ -z "$ipset" ] && unset ipset
-	[ -z "$src_port" ]  && unset src_port
-	[ -z "$dest_port" ]  && unset dest_port
-	if [ "$proto"  != 'tcp' ]  && [ "$proto" != 'udp' ]; then
+	[ -z "$src_port" ] && unset src_port
+	[ -z "$dest_port" ] && unset dest_port
+	if [ "$proto"  != 'tcp' ] && [ "$proto" != 'udp' ]; then
 		[ -n "$src_port" ] && {
 			LOG warn "src_port set to '$src_port' but proto set to '$proto' not tcp or udp. src_port will be ignored"
 		}
@@ -1188,6 +1187,7 @@ mwan3_report_iface_status()
 		result="$(mwan3_get_iface_hotplug_state $1) $online, uptime $uptime"
 	elif [ -n "$($IP rule | awk '$1 == "'$(($id+1000)):'"')" ] || \
 		     [ -n "$($IP rule | awk '$1 == "'$(($id+2000)):'"')" ] || \
+		     [ -n "$($IP rule | awk '$1 == "'$(($id+3000)):'"')" ] || \
 		     [ -n "$($IPT -S mwan3_iface_in_$1 2> /dev/null)" ] || \
 		     [ -n "$($IP route list table $id default dev $device 2> /dev/null)" ]; then
 		result="error"

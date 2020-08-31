@@ -157,7 +157,7 @@ main() {
 	local lost=0
 	local turn=0
 	local ping_protocol=4
-	local sleep_time result ping_result ping_result_raw  ping_status loss latency
+	local sleep_time result ping_result ping_result_raw ping_status loss latency
 
 	firstconnect
 	while true; do
@@ -183,7 +183,7 @@ main() {
 							ping_result_raw="$($PING -$ping_protocol -I ${SRC_IP:-$DEVICE} -c $count -W $timeout -s $size -t $max_ttl -q $track_ip 2>/dev/null)"
 							ping_status=$?
 							ping_result=$(echo "$ping_result_raw" | tail -n2)
-							loss="$(echo "$ping_result" | grep "packet loss" |  cut -d "," -f3 | awk '{print $1}' | sed -e 's/%//')"
+							loss="$(echo "$ping_result" | grep "packet loss" | cut -d "," -f3 | awk '{print $1}' | sed -e 's/%//')"
 							if [ "$ping_status" -ne 0 ] || [ "$loss" -eq 100 ]; then
 								latency=999999
 								loss=100
