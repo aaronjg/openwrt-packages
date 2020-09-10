@@ -21,16 +21,18 @@ proto_openfortivpn_init_config() {
 	proto_config_add_string "password"
 	proto_config_add_string "trusted_cert"
 	proto_config_add_string "remote_status_check"
+	# shellcheck disable=SC2034
 	no_device=1
+	# shellcheck disable=SC2034
 	available=1
 }
 
 proto_openfortivpn_setup() {
 	local config="$1"
 
-	local msg ifname ip server_ips pwfile callfile
+	local msg ifname ip server_ips pwfile callfile cmdline iface_device_name
 
-	local host peeraddr port tunlink local_ip username password trusted_cert \
+	local peeraddr port tunlink local_ip username password trusted_cert \
 	      remote_status_check
 	json_get_vars host peeraddr port tunlink local_ip username password trusted_cert \
 		      remote_status_check
@@ -41,7 +43,7 @@ proto_openfortivpn_setup() {
 	[ -n "$tunlink" ] && {
 		network_get_device iface_device_name "$tunlink"
 		network_is_up "$tunlink"  || {
-			msg="$tunlink is not up $iface_device_up"
+			msg="$tunlink is not up $iface_device_name"
 			logger -t "openfortivpn" "$config: $msg"
 			proto_notify_error "$config" "$msg"
 			proto_block_restart "$config"
@@ -52,8 +54,7 @@ proto_openfortivpn_setup() {
 	if echo "$peeraddr" | grep -q -E "$IPv4_REGEX"; then
 		server_ips="$peeraddr"
 	elif command -v resolveip >/dev/null ; then
-		server_ips="$(resolveip -4 -t 10 "$peeraddr")"
-		[ $? -eq 0 ] || {
+		server_ips="$(resolveip -4 -t 10 "$peeraddr")" || {
 			msg="$config: failed to resolve server ip for $peeraddr"
 			logger -t "openfortivpn" "$msg"
 			sleep 10
@@ -67,7 +68,7 @@ proto_openfortivpn_setup() {
 
 
 	[ "$remote_status_check" = "curl" ] && {
-		curl -k --head -s --connect-timeout 10 ${tunlink:+--interface} $iface_device_name https://$peeraddr > /dev/null || {
+		curl -k --head -s --connect-timeout 10 ${tunlink:+--interface} "$iface_device_name" "https://$peeraddr" > /dev/null || {
 			msg="failed to reach https://$peeraddr${tunlink:+ on $iface_device_name}"
 			logger -t "openfortivpn" "$config: $msg"
 			sleep 10
@@ -77,7 +78,7 @@ proto_openfortivpn_setup() {
 		}
 	}
 	[ "$remote_status_check" = "ping" ]  && {
-		ping ${tunlink:+-I} $iface_device_name -c 1 -w 10 $peeraddr > /dev/null 2>&1 || {
+		ping ${tunlink:+-I} "$iface_device_name" -c 1 -w 10 "$peeraddr" > /dev/null 2>&1 || {
 			msg="$config: failed to ping $peeraddr on $iface_device_name"
 			logger -t "openfortvpn" "$config: $msg"
 			sleep 10
@@ -96,7 +97,7 @@ proto_openfortivpn_setup() {
 
 	# uclient-fetch cannot bind to interface, so perform check after adding host dependency
 	[ "$remote_status_check" = "fetch" ]  && {
-		uclient-fetch --no-check-certificate -q -s --timeout=10 https://$peeraddr > /dev/null 2>&1 || {
+		uclient-fetch --no-check-certificate -q -s --timeout=10 "https://$peeraddr" > /dev/null 2>&1 || {
 			msg="$config: failed to reach ${server_ip:-$peeraddr} on $iface_device_name"
 			logger -t "openfortvpn" "$config: $msg"
 			sleep 10
@@ -114,23 +115,23 @@ proto_openfortivpn_setup() {
 	append_args "--pppd-use-peerdns=1"
 
 	[ -n "$tunlink" ] && {
-	        append_args "--ifname=$iface_device_name"
+		append_args "--ifname=$iface_device_name"
 	}
 
 	[ -n "$trusted_cert" ] && append_args "--trusted-cert=$trusted_cert"
 	[ -n "$username" ] && append_args -u "$username"
 	[ -n "$password" ] && {
-	        umask 077
-	        mkdir -p '/var/etc/openfortivpn'
-	        pwfile="/var/etc/openfortivpn/$config.passwd"
-	        echo "$password" > "$pwfile"
+		umask 077
+		mkdir -p '/var/etc/openfortivpn'
+		pwfile="/var/etc/openfortivpn/$config.passwd"
+		echo "$password" > "$pwfile"
 	}
 
 	[ -n "$local_ip" ] || local_ip=192.0.2.1
 	[ -e '/etc/ppp/peers' ] || mkdir -p '/etc/ppp/peers'
 	[ -e '/etc/ppp/peers/openfortivpn' ] || {
-	        ln -s -T '/var/etc/openfortivpn/peers' '/etc/ppp/peers/openfortivpn' 2> /dev/null
-	        mkdir -p '/var/etc/openfortivpn/peers'
+		ln -s -T '/var/etc/openfortivpn/peers' '/etc/ppp/peers/openfortivpn' 2> /dev/null
+		mkdir -p '/var/etc/openfortivpn/peers'
 	}
 
 	callfile="/var/etc/openfortivpn/peers/$config"
@@ -147,7 +148,7 @@ ipparam $config
 lcp-max-configure 40
 ip-up-script /lib/netifd/openfortivpn-ppp-up
 ip-down-script /lib/netifd/ppp-down
-mru 1354"  > $callfile
+mru 1354"  > "$callfile"
 	append_args "--pppd-call=openfortivpn/$config"
 
 	logger -p 6 -t openfortivpn "$config: executing 'openfortivpn $cmdline'"
@@ -161,8 +162,8 @@ proto_openfortivpn_teardown() {
 	pwfile="/var/etc/openfortivpn/$config.passwd"
 	callfile="/var/etc/openfortivpn/peers/$config"
 
-	rm -f $pwfile
-	rm -f $callfile
+	rm -f "$pwfile"
+	rm -f "$callfile"
 	proto_kill_command "$config" 2
 }
 
