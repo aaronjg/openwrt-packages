@@ -38,6 +38,8 @@ mwan3_init
 
 if [ "$MWAN3_STARTUP" != "init" ] && [ "$ACTION" = "ifup" ]; then
 	mwan3_set_user_iface_rules $INTERFACE $DEVICE
+	procd_running mwan3 "rtmon_ipv4" && procd_send_signal mwan3 "rtmon_ipv4" HUP
+	procd_running mwan3 "rtmon_ipv6" && procd_send_signal mwan3 "rtmon_ipv6" HUP
 fi
 
 config_get_bool enabled $INTERFACE 'enabled' '0'
@@ -66,7 +68,6 @@ case "$ACTION" in
 		mwan3_create_iface_rules $INTERFACE $DEVICE
 		mwan3_set_iface_hotplug_state $INTERFACE "$status"
 		if [ "$MWAN3_STARTUP" != "init" ]; then
-			mwan3_create_iface_route $INTERFACE $DEVICE
 	                mwan3_set_general_rules
 			[ "$status" = "online" ] && mwan3_set_policies_iptables
 		fi

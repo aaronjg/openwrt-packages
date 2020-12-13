@@ -446,6 +446,24 @@ mwan3_create_iface_route()
 	done
 }
 
+mwan3_flush_routes()
+{
+	local IP tid
+	if [ "$family" = "ipv4" ]; then
+		IP="$IP4"
+	elif [ "$family" = "ipv6" ] && [ $NO_IPV6 -eq 0 ]; then
+		IP="$IP6"
+	else
+		return
+	fi
+	LOG warn "flushing routes for $IP"
+	for tid in $($IP route list table all | sed -ne 's/.*table \([0-9]\+\).*/\1/p' | sort -u); do
+		[ $tid -gt $MWAN3_INTERFACE_MAX ] && continue
+		LOG warn "flushed routes for talbe $tid $IP"
+		$IP route flush table $tid &> /dev/null
+	done
+}
+
 mwan3_delete_iface_route()
 {
 	local id family

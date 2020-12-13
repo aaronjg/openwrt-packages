@@ -143,6 +143,16 @@ mwan3_rtmon_route_handle()
 	fi
 }
 
+refresh()
+{
+	local family=$1
+	LOG debug "reloading all routes $family - sending SIGSTOP to $CHILD"
+	kill -SIGSTOP $CHILD
+	mwan3_flush_routes ${family}
+	mwan3_add_all_routes ${family}
+	kill -SIGCONT $CHILD
+}
+
 main()
 {
 	local IP family
@@ -169,11 +179,16 @@ main()
 			mwan3_rtmon_route_handle "$line" "$family"
 		done
 	} &
-	child=$!
-	trap_with_arg func_trap "$child" SIGINT SIGTERM SIGKILL
+	CHILD=$!
+	trap_with_arg func_trap "$CHILD" SIGINT SIGTERM SIGKILL
+	trap "refresh $family" HUP
 	mwan3_set_connected_${family}
 	mwan3_add_all_routes ${family}
-	kill -SIGCONT $child
-	wait $child
+	kill -SIGCONT $CHILD
+	while true; do
+		wait $CHILD
+		# don't exit on SIGHUP from refresh
+		[ $? != 129 ] && return
+	done
 }
 main "$@"
