@@ -98,7 +98,7 @@ mwan3_rtmon_route_handle()
 	fi
 
 	# don't try to add routes when link has gone down
-	if [ -z "${route_line##linkdown*}" ]; then
+	if [ -z "${route_line##*linkdown*}" ]; then
 		LOG debug "not adding route due to linkdown - skipping $route_line"
 		return
 	fi
