@@ -159,7 +159,7 @@ main()
 		IP="$IP4"
 	fi
 	mwan3_init
-	sh -c "echo \$\$; exec $IP monitor route" | {
+	sh -c "KILL -SIGSTOP $$; echo \$\$; exec $IP monitor route" | {
 		read -r monitor_pid
 		trap_with_arg func_trap "$monitor_pid" SIGINT SIGTERM SIGKILL
 		while IFS='' read -r line; do
@@ -169,11 +169,10 @@ main()
 		done
 	} &
 	child=$!
-	kill -SIGSTOP $child
 	trap_with_arg func_trap "$child" SIGINT SIGTERM SIGKILL
 	mwan3_set_connected_${family}
 	mwan3_add_all_routes ${family}
 	kill -SIGCONT $child
-	wait $!
+	wait $child
 }
 main "$@"
